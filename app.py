@@ -1,42 +1,55 @@
 import os
-import io
 import re
 import json
 import subprocess
 import requests
 import threading
 import webbrowser
-from flask import Flask, request, jsonify, render_template, send_file, Response
+from flask import Flask, request, jsonify, render_template, Response
 from dotenv import load_dotenv, set_key
 from tools import TOOL_SCHEMAS, TOOL_FUNCTIONS
-import memory as mem
+import db
 
 load_dotenv()
+db.init()
 
 app = Flask(__name__)
 conversation_history = []
 
-SYSTEM_PROMPT = """You are Jarvis, a voice-operated home assistant on this Linux machine.
-You have full tool access: shell, filesystem, processes, browser control, web search, memory, and more.
-
-Rules — your replies are spoken aloud:
-- Keep replies to 1-3 short sentences. No markdown, no bullet points, no asterisks.
-- When asked about something online, ALWAYS web_search then browser_open the best results automatically.
-- When you learn something about the user or something worth keeping, use remember() to save it.
-- At conversation start, recall() relevant memories to personalize your responses.
-- When closing the browser say so briefly.
-- Summarize what you did, not how."""
-
 
 def get_config():
     return {
-        "url":          os.getenv("LM_STUDIO_URL",      "http://100.x.x.x:1234"),
-        "model":        os.getenv("LM_STUDIO_MODEL",     "local-model"),
-        "api_key":      os.getenv("LM_STUDIO_API_KEY",   ""),
-        "supabase_url": os.getenv("SUPABASE_URL",        ""),
-        "supabase_key": os.getenv("SUPABASE_ANON_KEY",   ""),
-        "piper_voice":  os.getenv("PIPER_VOICE",         "en_US-amy-medium"),
+        "url":         os.getenv("LM_STUDIO_URL",    "http://100.x.x.x:1234"),
+        "model":       os.getenv("LM_STUDIO_MODEL",   "local-model"),
+        "api_key":     os.getenv("LM_STUDIO_API_KEY", ""),
+        "piper_voice": os.getenv("PIPER_VOICE",       "en_US-amy-medium"),
     }
+
+
+def build_system_prompt():
+    base = """You are Jarvis, a voice-operated home assistant on this Linux machine.
+You have full tool access: shell, filesystem, processes, browser, web search, memory, topics, and concepts.
+
+Rules — your replies are spoken aloud via TTS:
+- 1-3 short sentences max. No markdown, asterisks, or bullet points.
+- When asked about something online, ALWAYS web_search then browser_open the best result automatically.
+- Use remember() for anything worth keeping long-term.
+- Use add_topic() to track ongoing subjects of interest — add them proactively.
+- Use remove_topic() to clean up resolved or irrelevant topics.
+- Use add_concept() to push live insights to the sidebar (system alerts, findings, observations).
+- Use set_active_topic() when the user shifts focus to a different subject.
+- If an active topic exists, stay on that topic unless the user redirects you.
+- Summarize what you did; don't explain how."""
+
+    mem = db.search_memories("", limit=5)
+    if mem:
+        base += f"\n\nRecent memory context:\n{mem}"
+
+    active = db.get_active_topic()
+    if active:
+        base += f"\n\nActive topic: {active['title']} — {active['description']}. Keep responses focused here."
+
+    return base
 
 
 def auth_headers(cfg):
@@ -45,19 +58,16 @@ def auth_headers(cfg):
     return {}
 
 
-# ── Tool-call parser (handles both native JSON and Gemma text output) ─────────
+# ── Tool-call fallback parser for Gemma ───────────────────────────────────────
 
-_TC_PATTERN = re.compile(
-    r'(?:<tool_call>|```(?:json)?)\s*(\{.*?"name"\s*:\s*"[^"]+".+?\})\s*(?:</tool_call>|```)',
+_TC_RE = re.compile(
+    r'(?:<tool_call>|```(?:json|tool_call)?)\s*(\{.*?"name"\s*:\s*"[^"]+".+?\})\s*(?:</tool_call>|```)',
     re.DOTALL,
 )
-_PLAIN_JSON = re.compile(r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"arguments"\s*:\s*(\{[^{}]*\})[^{}]*\}', re.DOTALL)
 
-
-def _extract_text_tool_calls(text: str) -> list:
-    """Parse tool calls that Gemma emits as text rather than structured output."""
+def _parse_text_tool_calls(text: str) -> list:
     calls = []
-    for m in _TC_PATTERN.finditer(text):
+    for m in _TC_RE.finditer(text):
         try:
             obj = json.loads(m.group(1))
             calls.append({
@@ -69,32 +79,22 @@ def _extract_text_tool_calls(text: str) -> list:
             })
         except Exception:
             pass
-    if not calls:
-        for m in _PLAIN_JSON.finditer(text):
-            try:
-                calls.append({
-                    "id": f"tc_{len(calls)}",
-                    "function": {"name": m.group(1), "arguments": m.group(2)},
-                })
-            except Exception:
-                pass
     return calls
 
 
 def call_lm(messages, cfg):
-    payload = {
-        "model":       cfg["model"],
-        "messages":    messages,
-        "tools":       TOOL_SCHEMAS,
-        "tool_choice": "auto",
-        "temperature": 0.7,
-        "max_tokens":  2048,
-        "stream":      False,
-    }
     resp = requests.post(
         f"{cfg['url']}/v1/chat/completions",
         headers=auth_headers(cfg),
-        json=payload,
+        json={
+            "model":       cfg["model"],
+            "messages":    messages,
+            "tools":       TOOL_SCHEMAS,
+            "tool_choice": "auto",
+            "temperature": 0.7,
+            "max_tokens":  2048,
+            "stream":      False,
+        },
         timeout=90,
     )
     resp.raise_for_status()
@@ -112,157 +112,106 @@ def run_tool(name, args):
 
 
 def agent_loop(user_message, history):
-    cfg = get_config()
-
-    # Inject relevant memories into context
-    memory_ctx = mem.search_memories(user_message)
-    sys_content = SYSTEM_PROMPT
-    if memory_ctx:
-        sys_content += f"\n\n{memory_ctx}"
-
-    messages = [{"role": "system", "content": sys_content}] + history + [
+    cfg      = get_config()
+    messages = [{"role": "system", "content": build_system_prompt()}] + history + [
         {"role": "user", "content": user_message}
     ]
     tool_log = []
 
-    for round_num in range(12):
-        msg       = call_lm(messages, cfg)
-        content   = msg.get("content") or ""
+    for _ in range(12):
+        msg        = call_lm(messages, cfg)
+        content    = msg.get("content") or ""
         tool_calls = msg.get("tool_calls") or []
 
-        # Fallback: detect text-embedded tool calls from Gemma
         if not tool_calls and content:
-            tool_calls = _extract_text_tool_calls(content)
+            tool_calls = _parse_text_tool_calls(content)
             if tool_calls:
-                # Strip the raw tool-call JSON from the visible reply
-                content = _TC_PATTERN.sub("", content).strip()
+                content = _TC_RE.sub("", content).strip()
 
         if not tool_calls:
             return content, tool_log
 
-        # Execute tool calls
         messages.append({**msg, "content": content or ""})
         for tc in tool_calls:
             name   = tc["function"]["name"]
             raw    = tc["function"].get("arguments", "{}")
             args   = json.loads(raw) if isinstance(raw, str) else raw
             result = run_tool(name, args)
-            tool_log.append({"tool": name, "args": args, "result": result[:400]})
+            tool_log.append({"tool": name, "result": result[:300]})
             messages.append({
                 "role":         "tool",
-                "tool_call_id": tc.get("id", f"tc_{round_num}"),
+                "tool_call_id": tc.get("id", "tc"),
                 "content":      result,
             })
 
-    return "I've completed the requested tasks.", tool_log
+    return "Done.", tool_log
 
 
 # ── Piper TTS ─────────────────────────────────────────────────────────────────
 
-def _piper_voices_dir():
-    """Return the directory where piper voice models live."""
-    candidates = [
-        os.path.expanduser("~/.local/share/piper"),
-        os.path.join(os.path.dirname(__file__), "voices"),
-    ]
-    for c in candidates:
-        if os.path.isdir(c):
-            return c
-    base = os.path.expanduser("~/.local/share/piper")
-    os.makedirs(base, exist_ok=True)
-    return base
-
-
-def _piper_model_path(voice: str) -> str:
-    vdir  = _piper_voices_dir()
-    model = os.path.join(vdir, f"{voice}.onnx")
-    config = os.path.join(vdir, f"{voice}.onnx.json")
-    return model, config
-
-
-def synth_piper(text: str, voice: str) -> bytes | None:
-    model, config = _piper_model_path(voice)
-    if not os.path.exists(model):
-        return None  # voice not downloaded yet
-    try:
-        proc = subprocess.run(
-            ["piper", "--model", model, "--config", config, "--output-raw"],
-            input=text.encode(),
-            capture_output=True,
-            timeout=30,
-        )
-        if proc.returncode == 0 and proc.stdout:
-            return proc.stdout  # raw 16-bit 22050Hz PCM
-    except Exception:
-        pass
-    return None
+def _voices_dir():
+    d = os.path.expanduser("~/.local/share/piper")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 @app.route("/tts", methods=["POST"])
 def tts():
     text  = request.json.get("text", "").strip()
-    voice = get_config().get("piper_voice", "en_US-amy-medium")
+    voice = get_config()["piper_voice"]
     if not text:
         return ("", 204)
-
-    # Strip any leftover markdown symbols before speaking
     text = re.sub(r"[*_`#>]", "", text)
 
-    audio = synth_piper(text, voice)
-    if audio is None:
+    vdir   = _voices_dir()
+    model  = os.path.join(vdir, f"{voice}.onnx")
+    config = os.path.join(vdir, f"{voice}.onnx.json")
+
+    if not os.path.exists(model):
         return jsonify({"error": "voice_not_downloaded", "voice": voice}), 503
 
-    # Return as WAV (add minimal 44-byte header for 22050Hz mono 16-bit)
-    sample_rate = 22050
-    num_channels = 1
-    bits = 16
-    data_size = len(audio)
-    header = (
-        b"RIFF" + (36 + data_size).to_bytes(4, "little") +
-        b"WAVE" +
-        b"fmt " + (16).to_bytes(4, "little") +
-        (1).to_bytes(2, "little") +                          # PCM
-        num_channels.to_bytes(2, "little") +
-        sample_rate.to_bytes(4, "little") +
-        (sample_rate * num_channels * bits // 8).to_bytes(4, "little") +
-        (num_channels * bits // 8).to_bytes(2, "little") +
-        bits.to_bytes(2, "little") +
-        b"data" + data_size.to_bytes(4, "little")
-    )
-    return Response(header + audio, mimetype="audio/wav")
-
-
-@app.route("/tts/voices", methods=["GET"])
-def list_voices():
-    vdir = _piper_voices_dir()
-    voices = [f.replace(".onnx", "") for f in os.listdir(vdir) if f.endswith(".onnx")]
-    return jsonify({"voices": voices, "dir": vdir})
+    try:
+        proc = subprocess.run(
+            ["piper", "--model", model, "--config", config, "--output-raw"],
+            input=text.encode(), capture_output=True, timeout=30,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            raise RuntimeError(proc.stderr.decode())
+        raw  = proc.stdout
+        sr   = 22050
+        hdr  = (
+            b"RIFF" + (36 + len(raw)).to_bytes(4, "little") + b"WAVE" +
+            b"fmt " + (16).to_bytes(4, "little") + (1).to_bytes(2, "little") +
+            (1).to_bytes(2, "little") + sr.to_bytes(4, "little") +
+            (sr * 2).to_bytes(4, "little") + (2).to_bytes(2, "little") +
+            (16).to_bytes(2, "little") + b"data" + len(raw).to_bytes(4, "little")
+        )
+        return Response(hdr + raw, mimetype="audio/wav")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/tts/download", methods=["POST"])
 def download_voice():
     voice = request.json.get("voice", "en_US-amy-medium")
-    vdir  = _piper_voices_dir()
-    model   = os.path.join(vdir, f"{voice}.onnx")
-    config  = os.path.join(vdir, f"{voice}.onnx.json")
-    base_url = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
-    # Map voice name to HuggingFace path (lang/lang_LOCALE/name/quality/)
-    parts = voice.split("-")  # e.g. en_US-amy-medium → ['en_US', 'amy', 'medium']
-    if len(parts) >= 3:
-        locale, name, quality = parts[0], parts[1], parts[2]
-        lang = locale.split("_")[0]
-        path = f"{lang}/{locale}/{name}/{quality}/{voice}"
-    else:
+    vdir  = _voices_dir()
+    parts = voice.split("-")
+    if len(parts) < 3:
         return jsonify({"error": "Invalid voice format"}), 400
+    locale, name, quality = parts[0], parts[1], parts[2]
+    lang  = locale.split("_")[0]
+    base  = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+    path  = f"{lang}/{locale}/{name}/{quality}/{voice}"
 
     def stream():
-        for ext, dest in [(".onnx", model), (".onnx.json", config)]:
-            url = f"{base_url}/{path}{ext}"
-            yield f"data: Downloading {url}\n\n"
+        import urllib.request
+        for ext in [".onnx", ".onnx.json"]:
+            url  = f"{base}/{path}{ext}"
+            dest = os.path.join(vdir, f"{voice}{ext}")
+            yield f"data: Downloading {voice}{ext}...\n\n"
             try:
-                import urllib.request
                 urllib.request.urlretrieve(url, dest)
-                yield f"data: Saved {dest}\n\n"
+                yield f"data: OK {dest}\n\n"
             except Exception as e:
                 yield f"data: ERROR {e}\n\n"
         yield "data: DONE\n\n"
@@ -270,55 +219,103 @@ def download_voice():
     return Response(stream(), mimetype="text/event-stream")
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# ── Tailscale ──────────────────────────────────────────────────────────────────
 
-@app.route("/")
-def index():
-    return render_template("index.html", config=get_config())
-
-
-@app.route("/config", methods=["POST"])
-def save_config():
-    data = request.json
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    if not os.path.exists(env_path):
-        open(env_path, "w").close()
-    mapping = {
-        "url":          "LM_STUDIO_URL",
-        "model":        "LM_STUDIO_MODEL",
-        "api_key":      "LM_STUDIO_API_KEY",
-        "supabase_url": "SUPABASE_URL",
-        "supabase_key": "SUPABASE_ANON_KEY",
-        "piper_voice":  "PIPER_VOICE",
-    }
-    for key, env_var in mapping.items():
-        if key in data:
-            set_key(env_path, env_var, data[key])
-            os.environ[env_var] = data[key]
-    # Reinit supabase client if credentials changed
-    if "supabase_url" in data or "supabase_key" in data:
-        import memory
-        memory._client = None
-    return jsonify({"status": "saved"})
-
-
-@app.route("/memory/init", methods=["POST"])
-def init_memory():
-    sb = mem._get_client()
-    if not sb:
-        return jsonify({"error": "Supabase not configured"}), 503
+@app.route("/api/tailscale")
+def tailscale_status():
     try:
-        # Use raw SQL via rpc or just try to insert to trigger table creation
-        # Tables must be created via Supabase dashboard SQL editor
-        return jsonify({"status": "ok", "connected": True})
+        raw = subprocess.run(
+            ["/usr/bin/tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=5
+        )
+        if raw.returncode != 0:
+            return jsonify({"error": raw.stderr.strip()}), 500
+        data  = json.loads(raw.stdout)
+        self_ = data.get("Self", {})
+        peers = data.get("Peer", {})
+
+        machines = [{
+            "hostname": self_.get("HostName", "this machine"),
+            "ip":       self_.get("TailscaleIPs", [""])[0],
+            "online":   True,
+            "self":     True,
+            "os":       self_.get("OS", ""),
+        }]
+        for key, peer in peers.items():
+            machines.append({
+                "hostname": peer.get("HostName", key),
+                "ip":       peer.get("TailscaleIPs", [""])[0],
+                "online":   peer.get("Online", False),
+                "self":     False,
+                "os":       peer.get("OS", ""),
+            })
+        machines.sort(key=lambda m: (not m["self"], not m["online"], m["hostname"]))
+        return jsonify({"machines": machines})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/memory/status", methods=["GET"])
-def memory_status():
-    return jsonify({"connected": mem.is_connected()})
+# ── Concepts (auto-generated system insights) ─────────────────────────────────
 
+@app.route("/api/concepts")
+def concepts_status():
+    import psutil, datetime
+
+    # Auto-generate live concepts from system state
+    auto = []
+    try:
+        cpu = psutil.cpu_percent(interval=0.3)
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage("/")
+        if cpu > 70:
+            db.add_concept(f"High CPU: {cpu:.0f}%", "warning", ttl_minutes=5)
+        if mem.percent > 85:
+            db.add_concept(f"RAM critical: {mem.percent:.0f}%", "warning", ttl_minutes=5)
+        if disk.percent > 90:
+            db.add_concept(f"Disk almost full: {disk.percent:.0f}%", "warning", ttl_minutes=30)
+
+        db.add_concept(f"CPU {cpu:.0f}% · RAM {mem.percent:.0f}% · Disk {disk.percent:.0f}%", "system", ttl_minutes=2)
+    except Exception:
+        pass
+
+    return jsonify({"concepts": db.get_concepts()})
+
+
+# ── Topics ─────────────────────────────────────────────────────────────────────
+
+@app.route("/api/topics")
+def get_topics():
+    return jsonify({"topics": db.get_topics()})
+
+
+@app.route("/api/topics", methods=["POST"])
+def create_topic():
+    data  = request.json
+    topic = db.add_topic(data.get("title", ""), data.get("description", ""))
+    return jsonify(topic)
+
+
+@app.route("/api/topics/<int:tid>", methods=["DELETE"])
+def delete_topic(tid):
+    return jsonify({"status": db.remove_topic(tid)})
+
+
+@app.route("/api/topics/<int:tid>/activate", methods=["POST"])
+def activate_topic(tid):
+    # Toggle off if already active
+    topics = db.get_topics()
+    already = any(t["id"] == tid and t["active"] for t in topics)
+    db.set_active_topic(0 if already else tid)
+    return jsonify({"active": not already})
+
+
+@app.route("/api/topics/<int:tid>/pin", methods=["POST"])
+def pin_topic(tid):
+    pinned = request.json.get("pinned", True)
+    return jsonify({"status": db.pin_topic(tid, pinned)})
+
+
+# ── Chat ───────────────────────────────────────────────────────────────────────
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -339,16 +336,35 @@ def chat():
         conversation_history.append({"role": "assistant", "content": reply})
         if len(conversation_history) > 40:
             conversation_history = conversation_history[-40:]
-
-        # Log to Supabase
-        mem.log_conversation(
-            user_message, reply,
-            tools_used=[t["tool"] for t in tool_log]
-        )
-
+        db.log_conversation(user_message, reply, [t["tool"] for t in tool_log])
         return jsonify({"reply": reply, "tools": tool_log})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    return render_template("index.html", config=get_config())
+
+
+@app.route("/config", methods=["POST"])
+def save_config():
+    data     = request.json
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if not os.path.exists(env_path):
+        open(env_path, "w").close()
+    for k, v in {
+        "url":         "LM_STUDIO_URL",
+        "model":       "LM_STUDIO_MODEL",
+        "api_key":     "LM_STUDIO_API_KEY",
+        "piper_voice": "PIPER_VOICE",
+    }.items():
+        if k in data:
+            set_key(env_path, v, data[k])
+            os.environ[v] = data[k]
+    return jsonify({"status": "saved"})
 
 
 @app.route("/ping", methods=["POST"])
@@ -364,7 +380,5 @@ def ping():
 
 if __name__ == "__main__":
     port = 5757
-    url  = f"http://localhost:{port}"
-    threading.Timer(1.2, lambda: webbrowser.open(url)).start()
-    print(f"Jarvis starting at {url}")
-    app.run(port=port, debug=False)
+    print(f"Jarvis at http://localhost:{port}")
+    app.run(port=port, debug=False, threaded=True)

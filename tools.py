@@ -10,7 +10,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import browser as _browser
-import memory as _mem
+import db
 
 
 def _run(cmd, timeout=30, cwd=None):
@@ -353,23 +353,54 @@ def browser_screenshot(tab_id: int, path: str = "") -> str:
 # ── Memory ────────────────────────────────────────────────────────────────────
 
 def remember(content: str, type: str = "fact", importance: int = 1) -> str:
-    """Store something in long-term memory (Supabase)."""
-    return _mem.store_memory(content, type=type, importance=importance)
+    return db.store_memory(content, type=type, importance=importance)
 
 
 def recall(query: str) -> str:
-    """Search long-term memory for anything relevant to the query."""
-    return _mem.search_memories(query) or "Nothing relevant found in memory."
+    return db.search_memories(query) or "Nothing relevant found in memory."
 
 
 def list_memories() -> str:
-    """List all stored memories."""
-    return _mem.list_all_memories()
+    return db.list_all_memories()
 
 
 def forget(memory_id: int) -> str:
-    """Delete a specific memory by ID."""
-    return _mem.delete_memory(memory_id)
+    return db.delete_memory(memory_id)
+
+
+# ── Topics ────────────────────────────────────────────────────────────────────
+
+def add_topic(title: str, description: str = "") -> str:
+    t = db.add_topic(title, description)
+    return f"Added topic: {title} (ID {t['id']})"
+
+
+def remove_topic(topic_id: int) -> str:
+    return db.remove_topic(topic_id)
+
+
+def set_active_topic(topic_id: int) -> str:
+    return db.set_active_topic(topic_id)
+
+
+def list_topics() -> str:
+    topics = db.get_topics()
+    if not topics:
+        return "No topics yet."
+    return "\n".join(
+        f"ID {t['id']} {'★' if t['pinned'] else ''}{'▶' if t['active'] else ''} {t['title']}: {t['description']}"
+        for t in topics
+    )
+
+
+# ── Concepts ──────────────────────────────────────────────────────────────────
+
+def add_concept(text: str, category: str = "info", ttl_minutes: int = 60) -> str:
+    return db.add_concept(text, category=category, ttl_minutes=ttl_minutes)
+
+
+def remove_concept(concept_id: int) -> str:
+    return db.remove_concept(concept_id)
 
 
 # ── Cron / scheduled tasks ────────────────────────────────────────────────────
@@ -424,6 +455,12 @@ TOOL_FUNCTIONS = {
     "recall":             recall,
     "list_memories":      list_memories,
     "forget":             forget,
+    "add_topic":          add_topic,
+    "remove_topic":       remove_topic,
+    "set_active_topic":   set_active_topic,
+    "list_topics":        list_topics,
+    "add_concept":        add_concept,
+    "remove_concept":     remove_concept,
 }
 
 TOOL_SCHEMAS = [
@@ -835,10 +872,83 @@ TOOL_SCHEMAS = [
             "description": "Delete a specific memory by its ID number.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "memory_id": {"type": "integer"}
-                },
+                "properties": {"memory_id": {"type": "integer"}},
                 "required": ["memory_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_topic",
+            "description": "Add a topic to the sidebar so it's tracked and visible. Use proactively when a new subject comes up.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title":       {"type": "string"},
+                    "description": {"type": "string"}
+                },
+                "required": ["title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_topic",
+            "description": "Remove a topic from the sidebar by ID when it's resolved or no longer relevant.",
+            "parameters": {
+                "type": "object",
+                "properties": {"topic_id": {"type": "integer"}},
+                "required": ["topic_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_active_topic",
+            "description": "Set a topic as the active focus (pass 0 to clear). Affects what Jarvis concentrates on.",
+            "parameters": {
+                "type": "object",
+                "properties": {"topic_id": {"type": "integer"}},
+                "required": ["topic_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_topics",
+            "description": "List all current topics in the sidebar.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_concept",
+            "description": "Push a concept or live insight to the right sidebar panel so the user can see it. Use for system alerts, findings, observations, or anything surfaced from data on this machine.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text":        {"type": "string"},
+                    "category":    {"type": "string", "enum": ["info", "warning", "system", "network", "idea"]},
+                    "ttl_minutes": {"type": "integer", "description": "How long to show it (default 60)"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_concept",
+            "description": "Remove a concept from the sidebar by ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {"concept_id": {"type": "integer"}},
+                "required": ["concept_id"]
             }
         }
     },
