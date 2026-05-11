@@ -9,7 +9,7 @@ import requests
 import threading
 import webbrowser
 from collections import deque
-from flask import Flask, request, jsonify, render_template, Response, send_from_directory
+from flask import Flask, request, jsonify, render_template, Response, send_from_directory, redirect
 from dotenv import load_dotenv, set_key
 from tools import TOOL_SCHEMAS, TOOL_FUNCTIONS
 import db
@@ -23,6 +23,7 @@ ssh.start_all_monitors()
 
 app = Flask(__name__)
 conversation_history = []
+mobile_conversation_history = []
 
 # ── Activity feed (rolling task list shown in the UI) ─────────────────────────
 _activity_lock    = threading.Lock()
@@ -744,19 +745,19 @@ def _extract_code_blocks(text: str) -> list:
     return blocks
 
 
-@app.route("/chat", methods=["POST"])
-def chat():
-    global conversation_history
-    data = request.json
+def _run_chat(data: dict, hist_list: list) -> tuple[dict, int]:
+    """Shared chat handler. `hist_list` is the conversation buffer (desktop or mobile)."""
+    if not isinstance(data, dict):
+        return {"error": "Invalid JSON"}, 400
 
     if data.get("reset"):
-        conversation_history = []
+        hist_list.clear()
         _activity_push("reset", "conversation cleared")
-        return jsonify({"reply": "Conversation cleared.", "tools": [], "code_blocks": []})
+        return {"reply": "Conversation cleared.", "tools": [], "code_blocks": []}, 200
 
     user_message = data.get("message", "").strip()
     if not user_message:
-        return jsonify({"error": "Empty message"}), 400
+        return {"error": "Empty message"}, 400
 
     db.log_interaction("user", user_message)
 
@@ -766,23 +767,53 @@ def chat():
 
     t_start = time.time()
     try:
-        reply, tool_log = agent_loop(user_message, conversation_history)
+        reply, tool_log = agent_loop(user_message, hist_list)
         code_blocks = _extract_code_blocks(reply)
-        conversation_history.append({"role": "user",      "content": user_message})
-        conversation_history.append({"role": "assistant", "content": reply})
-        if len(conversation_history) > 40:
-            conversation_history = conversation_history[-40:]
+        hist_list.append({"role": "user", "content": user_message})
+        hist_list.append({"role": "assistant", "content": reply})
+        if len(hist_list) > 40:
+            hist_list[:] = hist_list[-40:]
         db.log_conversation(user_message, reply, [t["tool"] for t in tool_log])
         db.log_interaction("assistant", reply)
 
         reply_snippet = (reply[:80] + "…") if len(reply) > 80 else reply
         _activity_push("reply", f"{reply_snippet}  ({time.time() - t_start:.1f}s)")
         _activity_set_current(None)
-        return jsonify({"reply": reply, "tools": tool_log, "code_blocks": code_blocks})
+        return {"reply": reply, "tools": tool_log, "code_blocks": code_blocks}, 200
     except Exception as e:
         _activity_push("error", f"chat: {e}")
         _activity_set_current(None)
-        return jsonify({"error": str(e)}), 500
+        return {"error": str(e)}, 500
+
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    body, code = _run_chat(request.json or {}, conversation_history)
+    return jsonify(body), code
+
+
+@app.route("/api/mobile/chat", methods=["POST"])
+def mobile_chat():
+    """Mobile / remote dispatch — same tools & LM as desktop; separate conversation buffer."""
+    expected = os.getenv("MOBILE_DISPATCH_TOKEN", "").strip()
+    if expected:
+        auth = request.headers.get("Authorization", "")
+        if auth != f"Bearer {expected}":
+            return jsonify({"error": "Unauthorized"}), 401
+    body, code = _run_chat(request.json or {}, mobile_conversation_history)
+    return jsonify(body), code
+
+
+@app.route("/mobile")
+def mobile_dispatch_ui():
+    """Lightweight phone UI for tasking Jarvis over Tailscale (bind host to tailnet IP or use port 80)."""
+    needs_token = bool(os.getenv("MOBILE_DISPATCH_TOKEN", "").strip())
+    return render_template("mobile_dispatch.html", needs_token=needs_token)
+
+
+@app.route("/m")
+def mobile_dispatch_short():
+    return redirect("/mobile", code=302)
 
 
 @app.route("/api/activity")
@@ -847,6 +878,10 @@ def ping():
 
 
 if __name__ == "__main__":
-    port = 5757
-    print(f"Jarvis at http://localhost:{port}")
-    app.run(port=port, debug=False, threaded=True)
+    host = os.getenv("JARVIS_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.getenv("JARVIS_PORT", "5757"))
+    print(f"Jarvis at http://{host}:{port}/")
+    print(f"  Mobile dispatch UI: http://{host}:{port}/mobile")
+    if host == "127.0.0.1":
+        print("  (Set JARVIS_HOST=0.0.0.0 to allow Tailscale / LAN access.)")
+    app.run(host=host, port=port, debug=False, threaded=True)

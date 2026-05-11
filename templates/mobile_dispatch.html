@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#050a0f" />
+  <title>Jarvis · Dispatch</title>
+  <style>
+    :root {
+      --bg: #050a0f;
+      --card: #0d1117;
+      --line: #30363d;
+      --txt: #e6edf3;
+      --muted: #8b949e;
+      --blue: #58a6ff;
+      --green: #3fb950;
+      --red: #f85149;
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      background: var(--bg);
+      color: var(--txt);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: 15px;
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      padding-bottom: calc(12px + var(--safe-bottom));
+    }
+    header {
+      flex-shrink: 0;
+      padding: 8px 4px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 {
+      margin: 0;
+      font-size: 13px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--blue);
+      font-weight: 700;
+    }
+    .sub {
+      margin: 6px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    #token-row {
+      margin-top: 10px;
+      display: none;
+    }
+    #token-row.show { display: block; }
+    #token-row label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px; }
+    #token-row input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #161b22;
+      color: var(--txt);
+      font-size: 14px;
+    }
+    #log {
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 12px 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .bubble {
+      max-width: 92%;
+      padding: 10px 14px;
+      border-radius: 16px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .bubble.you {
+      align-self: flex-end;
+      background: rgba(88, 166, 255, 0.12);
+      border: 1px solid rgba(88, 166, 255, 0.35);
+    }
+    .bubble.jarvis {
+      align-self: flex-start;
+      background: rgba(139, 92, 246, 0.1);
+      border: 1px solid rgba(139, 92, 246, 0.35);
+    }
+    .bubble.err {
+      align-self: center;
+      background: rgba(248, 81, 73, 0.12);
+      border: 1px solid var(--red);
+      color: #ffb4b0;
+      font-size: 13px;
+    }
+    .bubble .meta {
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .tools {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+    footer {
+      flex-shrink: 0;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+    textarea {
+      flex: 1;
+      min-height: 44px;
+      max-height: 120px;
+      resize: none;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--txt);
+      font-size: 15px;
+      font-family: inherit;
+      line-height: 1.35;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: var(--blue);
+    }
+    button {
+      flex-shrink: 0;
+      min-width: 72px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: none;
+      background: var(--blue);
+      color: #fff;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .row2 {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 8px;
+      gap: 8px;
+    }
+    .row2 button.secondary {
+      flex: 1;
+      background: #21262d;
+      color: var(--muted);
+      border: 1px solid var(--line);
+    }
+    .hint { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Jarvis Dispatch</h1>
+    <p class="sub">Task your home machine from the Tailnet. Same tools as desktop; this thread is separate from the orb UI.</p>
+    <div id="token-row" class="{% if needs_token %}show{% endif %}">
+      <label for="token">Dispatch token (from MOBILE_DISPATCH_TOKEN on the server)</label>
+      <input id="token" type="password" autocomplete="off" placeholder="Paste token once — stored only in this browser" />
+    </div>
+  </header>
+
+  <div id="log" aria-live="polite"></div>
+
+  <footer>
+    <div class="row">
+      <textarea id="msg" rows="2" placeholder="e.g. Check disk space on the server…" enterkeyhint="send"></textarea>
+      <button type="button" id="send">Send</button>
+    </div>
+    <div class="row2">
+      <button type="button" class="secondary" id="reset">New thread</button>
+    </div>
+    <p class="hint">Tip: open this URL on your phone while on Tailscale. For port 80 on Linux use <code>sudo</code> or <code>tailscale serve</code> — see README.</p>
+  </footer>
+
+  <script>
+    (function () {
+      var NEEDS_TOKEN = {{ 'true' if needs_token else 'false' }};
+      var STORAGE_KEY = 'jarvis_mobile_dispatch_token';
+      var logEl = document.getElementById('log');
+      var msgEl = document.getElementById('msg');
+      var sendBtn = document.getElementById('send');
+      var resetBtn = document.getElementById('reset');
+      var tokenEl = document.getElementById('token');
+      var tokenRow = document.getElementById('token-row');
+
+      if (NEEDS_TOKEN) {
+        tokenRow.classList.add('show');
+        tokenEl.value = localStorage.getItem(STORAGE_KEY) || '';
+      }
+
+      function authHeaders() {
+        var h = { 'Content-Type': 'application/json' };
+        if (NEEDS_TOKEN) {
+          var t = (tokenEl.value || localStorage.getItem(STORAGE_KEY) || '').trim();
+          if (t) h['Authorization'] = 'Bearer ' + t;
+        }
+        return h;
+      }
+
+      function appendBubble(role, text, tools) {
+        var d = document.createElement('div');
+        d.className = 'bubble ' + role;
+        if (role === 'you') d.innerHTML = '<div class="meta">You</div>' + escapeHtml(text);
+        else if (role === 'jarvis') d.innerHTML = '<div class="meta">Jarvis</div>' + escapeHtml(text);
+        else d.innerHTML = '<div class="meta">Error</div>' + escapeHtml(text);
+        if (tools && tools.length) {
+          var t = document.createElement('div');
+          t.className = 'tools';
+          t.textContent = 'Tools: ' + tools.map(function (x) { return x.tool; }).join(', ');
+          d.appendChild(t);
+        }
+        logEl.appendChild(d);
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function escapeHtml(s) {
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+      }
+
+      function setBusy(b) {
+        sendBtn.disabled = b;
+        msgEl.disabled = b;
+      }
+
+      async function postChat(body) {
+        var res = await fetch('/api/mobile/chat', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(body),
+        });
+        var data = {};
+        try { data = await res.json(); } catch (e) {}
+        return { ok: res.ok, data: data, status: res.status };
+      }
+
+      sendBtn.addEventListener('click', async function () {
+        var text = (msgEl.value || '').trim();
+        if (!text) return;
+        if (NEEDS_TOKEN) {
+          var tok = (tokenEl.value || '').trim();
+          if (!tok) {
+            appendBubble('err', 'Set the dispatch token first (server MOBILE_DISPATCH_TOKEN).');
+            return;
+          }
+          localStorage.setItem(STORAGE_KEY, tok);
+        }
+        appendBubble('you', text);
+        msgEl.value = '';
+        setBusy(true);
+        var r = await postChat({ message: text });
+        setBusy(false);
+        if (!r.ok) {
+          if (r.status === 401) appendBubble('err', 'Unauthorized — check your dispatch token.');
+          else appendBubble('err', (r.data && r.data.error) ? r.data.error : 'Request failed (' + r.status + ')');
+          return;
+        }
+        if (r.data.error && !r.data.reply) {
+          appendBubble('err', r.data.error);
+          return;
+        }
+        appendBubble('jarvis', r.data.reply || '(no text)', r.data.tools);
+      });
+
+      resetBtn.addEventListener('click', async function () {
+        setBusy(true);
+        var r = await postChat({ reset: true });
+        setBusy(false);
+        if (r.ok) {
+          logEl.innerHTML = '';
+          appendBubble('jarvis', r.data.reply || 'Thread cleared.');
+        } else {
+          appendBubble('err', (r.data && r.data.error) ? r.data.error : 'Reset failed');
+        }
+      });
+
+      msgEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendBtn.click();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
