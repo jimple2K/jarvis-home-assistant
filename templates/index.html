@@ -34,8 +34,9 @@
       padding: 5px 10px;
       font-size: 13px;
     }
-    #api-url-input { width: 230px; }
-    #model-input   { width: 180px; }
+    #api-url-input { width: 220px; }
+    #model-input   { width: 160px; }
+    #api-key-input { width: 180px; }
     #status-dot {
       width: 10px; height: 10px; border-radius: 50%;
       background: #484f58; flex-shrink: 0;
@@ -141,6 +142,9 @@
   <label>Model</label>
   <input id="model-input" type="text" value="{{ config.model }}" placeholder="local-model" />
 
+  <label>API Key</label>
+  <input id="api-key-input" type="password" value="{{ config.api_key }}" placeholder="optional" />
+
   <button class="btn" onclick="pingServer()">Test Connection</button>
   <button class="btn primary" onclick="saveConfig()">Save</button>
   <span id="save-status">Saved!</span>
@@ -223,9 +227,10 @@
   }
 
   async function saveConfig() {
-    const url   = document.getElementById('api-url-input').value.trim();
-    const model = document.getElementById('model-input').value.trim();
-    await fetch('/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, model}) });
+    const url     = document.getElementById('api-url-input').value.trim();
+    const model   = document.getElementById('model-input').value.trim();
+    const api_key = document.getElementById('api-key-input').value.trim();
+    await fetch('/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, model, api_key}) });
     const s = document.getElementById('save-status');
     s.style.display = 'inline';
     setTimeout(() => s.style.display = 'none', 2000);

@@ -16,7 +16,14 @@ def get_config():
     return {
         "url": os.getenv("LM_STUDIO_URL", "http://100.x.x.x:1234"),
         "model": os.getenv("LM_STUDIO_MODEL", "local-model"),
+        "api_key": os.getenv("LM_STUDIO_API_KEY", ""),
     }
+
+
+def auth_headers(cfg):
+    if cfg["api_key"]:
+        return {"Authorization": f"Bearer {cfg['api_key']}"}
+    return {}
 
 
 SYSTEM_PROMPT = """You are Jarvis, a helpful home assistant. You are concise, intelligent, and proactive.
@@ -40,6 +47,9 @@ def save_config():
     if "model" in data:
         set_key(env_path, "LM_STUDIO_MODEL", data["model"])
         os.environ["LM_STUDIO_MODEL"] = data["model"]
+    if "api_key" in data:
+        set_key(env_path, "LM_STUDIO_API_KEY", data["api_key"])
+        os.environ["LM_STUDIO_API_KEY"] = data["api_key"]
     return jsonify({"status": "saved"})
 
 
@@ -59,6 +69,7 @@ def chat():
     try:
         resp = requests.post(
             f"{cfg['url']}/v1/chat/completions",
+            headers=auth_headers(cfg),
             json={
                 "model": cfg["model"],
                 "messages": messages,
@@ -81,7 +92,7 @@ def chat():
 def ping():
     cfg = get_config()
     try:
-        resp = requests.get(f"{cfg['url']}/v1/models", timeout=5)
+        resp = requests.get(f"{cfg['url']}/v1/models", headers=auth_headers(cfg), timeout=5)
         models = [m["id"] for m in resp.json().get("data", [])]
         return jsonify({"status": "online", "models": models})
     except Exception as e:
