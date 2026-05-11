@@ -13,6 +13,7 @@ import browser as _browser
 import db
 import ssh_metrics as _ssh
 import spotify as _spotify
+import race_hub as _race_hub
 
 
 def _run(cmd, timeout=30, cwd=None):
@@ -523,6 +524,54 @@ def spotify_play(query: str, kind: str = "track") -> str:
     return _spotify.search_and_play(query, kind=kind)
 
 
+# ── Racing & media ops hub ────────────────────────────────────────────────────
+
+def _format_race_hub_item(it: dict) -> str:
+    status_icon = {"ok": "✓", "attention": "⚠", "unknown": "·"}.get(it.get("status", ""), "·")
+    line = f"ID {it['id']} [{it['section']}] {status_icon} {it['title']}"
+    if it.get("detail"):
+        line += f" — {it['detail']}"
+    if it.get("link_url"):
+        line += f"  ({it['link_url']})"
+    return line
+
+
+def race_hub_list(section: str = "", query: str = "") -> str:
+    items = _race_hub.list_items(section=section or None, query=query or "")
+    if not items:
+        scope = f"section '{section}'" if section else "the racing hub"
+        return f"No items in {scope}."
+    return "\n".join(_format_race_hub_item(it) for it in items)
+
+
+def race_hub_add(section: str, title: str, detail: str = "",
+                 status: str = "unknown", link_url: str = "") -> str:
+    item = _race_hub.create_item(
+        section=section, title=title, detail=detail,
+        status=status, link_url=link_url,
+    )
+    return f"Added to {item['section']}: {item['title']} (ID {item['id']})"
+
+
+def race_hub_update(item_id: int, section: str = "", title: str = "",
+                    detail: str = "", status: str = "", link_url: str = "") -> str:
+    fields = {}
+    if section:  fields["section"]  = section
+    if title:    fields["title"]    = title
+    if detail:   fields["detail"]   = detail
+    if status:   fields["status"]   = status
+    if link_url: fields["link_url"] = link_url
+    item = _race_hub.update_item(item_id, **fields)
+    if not item:
+        return f"No racing hub item with ID {item_id}."
+    return f"Updated ID {item_id}: {_format_race_hub_item(item)}"
+
+
+def race_hub_remove(item_id: int) -> str:
+    ok = _race_hub.delete_item(item_id)
+    return f"Removed racing hub item {item_id}." if ok else f"No racing hub item with ID {item_id}."
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_FUNCTIONS = {
@@ -578,6 +627,10 @@ TOOL_FUNCTIONS = {
     "spotify_volume":      spotify_volume,
     "spotify_search":      spotify_search,
     "spotify_play":        spotify_play,
+    "race_hub_list":       race_hub_list,
+    "race_hub_add":        race_hub_add,
+    "race_hub_update":     race_hub_update,
+    "race_hub_remove":     race_hub_remove,
 }
 
 TOOL_SCHEMAS = [
@@ -1223,6 +1276,79 @@ TOOL_SCHEMAS = [
                     "command":  {"type": "string"}
                 },
                 "required": ["hostname", "command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "race_hub_list",
+            "description": (
+                "List items from the racing & media ops hub — the team's board for "
+                "race car equipment readiness, video/data ops, and monitoring context. "
+                "Optionally filter by section ('fleet', 'media', 'monitoring', 'general') "
+                "or a free-text query over title/detail."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "section": {"type": "string", "enum": ["fleet", "media", "monitoring", "general"]},
+                    "query":   {"type": "string", "description": "Optional substring filter"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "race_hub_add",
+            "description": (
+                "Add an item to the racing & media ops hub. Use 'fleet' for cars, spare parts, "
+                "tools, and setup notes; 'media' for shoots, projects, storage paths, camera/recorder "
+                "assignments; 'monitoring' for runbooks, dashboard URLs, on-call notes; 'general' "
+                "for anything else."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "section":  {"type": "string", "enum": ["fleet", "media", "monitoring", "general"]},
+                    "title":    {"type": "string"},
+                    "detail":   {"type": "string", "description": "Optional longer notes"},
+                    "status":   {"type": "string", "enum": ["ok", "attention", "unknown"]},
+                    "link_url": {"type": "string", "description": "Optional URL (Drive, Grafana, Notion, etc.)"}
+                },
+                "required": ["section", "title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "race_hub_update",
+            "description": "Update fields of an existing racing hub item by ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_id":  {"type": "integer"},
+                    "section":  {"type": "string", "enum": ["fleet", "media", "monitoring", "general"]},
+                    "title":    {"type": "string"},
+                    "detail":   {"type": "string"},
+                    "status":   {"type": "string", "enum": ["ok", "attention", "unknown"]},
+                    "link_url": {"type": "string"}
+                },
+                "required": ["item_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "race_hub_remove",
+            "description": "Delete a racing hub item by ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {"item_id": {"type": "integer"}},
+                "required": ["item_id"]
             }
         }
     },

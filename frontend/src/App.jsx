@@ -4,7 +4,10 @@ import LeftSidebar from './components/LeftSidebar.jsx';
 import Center from './components/Center.jsx';
 import RightSidebar from './components/RightSidebar.jsx';
 import SettingsDrawer from './components/SettingsDrawer.jsx';
+import RaceHubDrawer from './components/RaceHubDrawer.jsx';
 import { useSpeech } from './hooks/useSpeech.js';
+import { startBargeInMonitor } from './hooks/startBargeInMonitor.js';
+import { stripCodeFencesForTts } from './lib/stripCodeFencesForTts.js';
 import {
   getConfig,
   getTopics,
@@ -29,6 +32,8 @@ export default function App() {
   const alwaysOnRef    = useRef(false);
   const [micId,        setMicIdRaw]    = useState('');
   const micIdRef       = useRef('');
+  const speakAbortedRef = useRef(false);
+  const bargeStopRef   = useRef(() => {});
 
   // ── Transcript ───────────────────────────────────────────────────────────────
   const [txYou,    setTxYou]    = useState('');
@@ -36,6 +41,8 @@ export default function App() {
 
   // ── Code blocks ──────────────────────────────────────────────────────────────
   const [codeBlocks, setCodeBlocks] = useState([]);
+
+  const [typedDraft, setTypedDraft] = useState('');
 
   // ── Sidebar data ─────────────────────────────────────────────────────────────
   const [topics,    setTopics]    = useState([]);
@@ -47,6 +54,7 @@ export default function App() {
   // ── Top bar ──────────────────────────────────────────────────────────────────
   const [apiOnline,    setApiOnline]    = useState(null);   // null=unknown, true, false
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [raceHubOpen,  setRaceHubOpen]  = useState(false);
   const [config,       setConfig]       = useState(null);
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -87,6 +95,19 @@ export default function App() {
   }
 
   // ── Speech hook ───────────────────────────────────────────────────────────────
+  function speechErrorMessage(code) {
+    switch (code) {
+      case 'not-supported':       return 'Speech recognition not supported in this browser. Use Chrome.';
+      case 'not-allowed':         return 'Mic permission denied — click 🔒 in the address bar and allow Microphone for 127.0.0.1.';
+      case 'service-not-allowed': return 'Chrome blocked the speech service. Check chrome://settings/content/microphone.';
+      case 'network':             return 'Speech recognition needs internet — Chrome routes SR to Google. Check your connection.';
+      case 'audio-capture':       return 'No microphone detected. Plug one in or pick a different device in Settings.';
+      case 'aborted':             return 'Speech recognition was aborted.';
+      case 'language-not-supported': return 'Language not supported by Chrome speech recognition.';
+      default:                    return `Speech error: ${code}`;
+    }
+  }
+
   const speech = useSpeech({
     onInterim: (text) => {
       setTxYou(text);
@@ -109,10 +130,16 @@ export default function App() {
         return;
       }
       if (error && error !== 'rejected') {
-        // recognizer error
+        // recognizer error — surface it so the user knows what happened
+        console.warn('[jarvis] speech recognition error:', error);
         setTxYou('');
+        setTxJarvis(speechErrorMessage(error));
         setUiState('');
-        if (alwaysOnRef.current) {
+        // Auto-clear the error after a while so the UI doesn't get stuck on it
+        setTimeout(() => {
+          setTxJarvis(prev => prev === speechErrorMessage(error) ? '' : prev);
+        }, 8000);
+        if (alwaysOnRef.current && error !== 'not-allowed' && error !== 'not-supported') {
           setTimeout(() => { if (!isBusy()) startListening(); }, 1500);
         }
         return;
@@ -131,10 +158,26 @@ export default function App() {
 
   // ── Interrupt ────────────────────────────────────────────────────────────────
   function interrupt() {
+    bargeStopRef.current();
+    bargeStopRef.current = () => {};
     ttsStop();
     speech.abort();
     setUiState('');
     setTxYou('');
+  }
+
+  function sendTypedToJarvis() {
+    const raw = typedDraft.trim();
+    if (!raw) return;
+    if (uiStateRef.current === 'thinking') return;
+    setTypedDraft('');
+    const preview = raw.length > 140 ? `${raw.slice(0, 140)}…` : raw;
+    const bridged =
+      '[Typed in the UI for exact characters — voice was impractical or unreliable. Treat everything below as literal text; ask before repeating secrets, passwords, or API keys aloud.]\n\n' +
+      raw;
+    interrupt();
+    setTxYou(`Typed — ${preview}`);
+    sendToJarvis(bridged);
   }
 
   // ── Orb click ────────────────────────────────────────────────────────────────
@@ -159,6 +202,14 @@ export default function App() {
     setTxJarvis('');
     try {
       const data = await sendChat(text);
+      if (data.error && !data.reply) {
+        setUiState('');
+        setTxJarvis(`Error: ${data.error}`);
+        if (alwaysOnRef.current) {
+          setTimeout(() => { if (!isBusy()) startListening(); }, 1500);
+        }
+        return;
+      }
 
       if (data.tools?.length) {
         for (const t of data.tools) {
@@ -194,17 +245,50 @@ export default function App() {
       doneAfterSpeaking();
       return;
     }
+    const lineForSpeech = stripCodeFencesForTts(text);
+    if (!lineForSpeech) {
+      doneAfterSpeaking();
+      return;
+    }
+    speakAbortedRef.current = false;
     setUiState('speaking');
+
+    bargeStopRef.current = () => {};
+    const stopMonitor = startBargeInMonitor({
+      micId: micIdRef.current || undefined,
+      onBarge: () => {
+        if (speakAbortedRef.current) return;
+        speakAbortedRef.current = true;
+        bargeStopRef.current();
+        bargeStopRef.current = () => {};
+        ttsStop();
+        speech.abort();
+        setTimeout(() => {
+          setUiState('listening');
+          speech.start(micIdRef.current || undefined);
+        }, 60);
+      },
+    });
+    bargeStopRef.current = stopMonitor;
+
     try {
-      const result = await tts(text);
+      const result = await tts(lineForSpeech);
       if (result.status === 503) {
         setTxJarvis(prev => prev + ` [Voice "${result.voice}" not downloaded — open Settings]`);
       }
     } catch {}
+    finally {
+      bargeStopRef.current();
+      bargeStopRef.current = () => {};
+    }
     doneAfterSpeaking();
   }
 
   function doneAfterSpeaking() {
+    if (speakAbortedRef.current) {
+      speakAbortedRef.current = false;
+      return;
+    }
     setUiState('');
     // 1.8s gap after speaking — enough for paplay to fully drain
     if (alwaysOnRef.current) {
@@ -219,6 +303,8 @@ export default function App() {
     resetChat().catch(() => {});
     setTxYou('');
     setTxJarvis('');
+    setCodeBlocks([]);
+    setTypedDraft('');
     setSettingsOpen(false);
   }
 
@@ -236,6 +322,7 @@ export default function App() {
       if (e.key === 'Escape') {
         interrupt();
         setSettingsOpen(false);
+        setRaceHubOpen(false);
       }
     }
     document.addEventListener('keydown', onKeyDown);
@@ -282,6 +369,7 @@ export default function App() {
         onToggleAlwaysOn={toggleAlwaysOn}
         onNewChat={handleNewChat}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenRaceHub={() => setRaceHubOpen(true)}
       />
       <LeftSidebar topics={topics} onTopicsChange={setTopics} />
       <Center
@@ -290,6 +378,10 @@ export default function App() {
         codeBlocks={codeBlocks}
         onOrbClick={handleOrbClick}
         onClearCode={() => setCodeBlocks([])}
+        typedDraft={typedDraft}
+        onTypedDraftChange={setTypedDraft}
+        onSendTyped={sendTypedToJarvis}
+        typedSendDisabled={!typedDraft.trim() || uiState === 'thinking'}
       />
       <RightSidebar
         tailscale={tailscale}
@@ -301,10 +393,14 @@ export default function App() {
         open={settingsOpen}
         config={config}
         onClose={() => setSettingsOpen(false)}
-        onResetConversation={() => { setTxYou(''); setTxJarvis(''); }}
+        onResetConversation={() => { setTxYou(''); setTxJarvis(''); setCodeBlocks([]); setTypedDraft(''); }}
         onApiOnlineChange={setApiOnline}
         onSshHostsChange={setSshHosts}
         onSetUiState={setUiState}
+      />
+      <RaceHubDrawer
+        open={raceHubOpen}
+        onClose={() => setRaceHubOpen(false)}
       />
     </>
   );

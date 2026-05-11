@@ -28,7 +28,7 @@ function CodeBlock({ block, index }) {
           {copied ? 'Copied!' : 'Copy'}
         </button>
       </div>
-      <pre dangerouslySetInnerHTML={{ __html: esc(block.code) }} />
+      <pre>{block.code}</pre>
     </div>
   );
 }

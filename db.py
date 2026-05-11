@@ -57,11 +57,24 @@ def init():
             CREATE INDEX IF NOT EXISTS mem_importance ON memories(importance DESC);
             CREATE INDEX IF NOT EXISTS mem_created    ON memories(created_at DESC);
             CREATE INDEX IF NOT EXISTS topics_active  ON topics(active DESC);
+            CREATE TABLE IF NOT EXISTS interaction_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                role        TEXT NOT NULL,
+                content     TEXT NOT NULL,
+                created_at  TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS ilog_role_time ON interaction_log(role, id DESC);
         """)
     # SSH schema lives in ssh_metrics to keep it colocated
     try:
         import ssh_metrics
         ssh_metrics.init_schema()
+    except Exception:
+        pass
+    # Race & media ops hub schema
+    try:
+        import race_hub
+        race_hub.init_schema()
     except Exception:
         pass
 
@@ -195,3 +208,34 @@ def remove_concept(concept_id: int) -> str:
     with _lock, _conn() as c:
         c.execute("DELETE FROM concepts WHERE id=?", (concept_id,))
     return f"Removed concept {concept_id}"
+
+
+# ── Interaction log (cross-session personalization) ─────────────────────────
+
+def log_interaction(role: str, content: str) -> None:
+    """Append a user or assistant line for personalization (survives New Chat)."""
+    if not content or not role:
+        return
+    lim = 1800 if role == "assistant" else 4000
+    snippet = content[:lim]
+    with _lock, _conn() as c:
+        c.execute(
+            "INSERT INTO interaction_log (role, content) VALUES (?, ?)",
+            (role, snippet),
+        )
+        c.execute(
+            """DELETE FROM interaction_log WHERE id NOT IN (
+                SELECT id FROM interaction_log ORDER BY id DESC LIMIT 400
+            )"""
+        )
+
+
+def recent_user_interactions(limit: int = 12) -> list[str]:
+    """Oldest-first digest of recent user lines for the system prompt."""
+    with _lock, _conn() as c:
+        rows = c.execute(
+            """SELECT content FROM interaction_log
+               WHERE role = 'user' ORDER BY id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [r[0] for r in reversed(rows)]

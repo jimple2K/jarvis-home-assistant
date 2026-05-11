@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { getSpotifyCurrent } from '../api.js';
 
-export default function TopBar({ apiOnline, alwaysOn, onToggleAlwaysOn, onNewChat, onOpenSettings }) {
+export default function TopBar({ apiOnline, alwaysOn, onToggleAlwaysOn, onNewChat, onOpenSettings, onOpenRaceHub }) {
   const [nowPlaying, setNowPlaying] = useState(null);
 
   useEffect(() => {
@@ -46,6 +46,7 @@ export default function TopBar({ apiOnline, alwaysOn, onToggleAlwaysOn, onNewCha
         &#x27F3; Always On
       </button>
       <button className="tbtn" onClick={onNewChat}>New Chat</button>
+      <button className="tbtn" onClick={onOpenRaceHub} title="Racing & media ops hub">&#9201; Racing</button>
       <button className="tbtn" onClick={onOpenSettings}>&#9881; Settings</button>
     </div>
   );

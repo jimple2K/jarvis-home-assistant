@@ -35,7 +35,11 @@ export async function sendChat(message) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ message }),
   });
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { error: data.error || `HTTP ${res.status}`, ...data };
+  }
+  return data;
 }
 
 export async function resetChat() {
@@ -180,5 +184,39 @@ export async function spotifyNext() {
 
 export async function spotifyPrevious() {
   const res = await fetch('/api/spotify/previous', { method: 'POST' });
+  return res.json();
+}
+
+// ── Race & media ops hub ──────────────────────────────────────────────────────
+
+export async function getRaceHubItems(section = '', query = '') {
+  const params = new URLSearchParams();
+  if (section) params.set('section', section);
+  if (query)   params.set('q',       query);
+  const qs  = params.toString();
+  const res = await fetch('/api/race-hub/items' + (qs ? `?${qs}` : ''));
+  return res.json();
+}
+
+export async function createRaceHubItem(data) {
+  const res = await fetch('/api/race-hub/items', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+export async function updateRaceHubItem(id, data) {
+  const res = await fetch(`/api/race-hub/items/${id}`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+export async function deleteRaceHubItem(id) {
+  const res = await fetch(`/api/race-hub/items/${id}`, { method: 'DELETE' });
   return res.json();
 }

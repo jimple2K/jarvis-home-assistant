@@ -15,6 +15,7 @@ from tools import TOOL_SCHEMAS, TOOL_FUNCTIONS
 import db
 import ssh_metrics as ssh
 import spotify as _spotify
+import race_hub
 
 load_dotenv()
 db.init()
@@ -78,7 +79,8 @@ def build_system_prompt():
 You have full tool access: shell, filesystem, processes, browser, web search, memory, topics, concepts, and Spotify control.
 
 Rules — your replies are spoken aloud via TTS:
-- 1-3 short sentences max. No markdown, asterisks, or bullet points.
+- Keep the spoken part brief (1-3 short sentences). Outside of code fences, avoid markdown bullets/headers/asterisks.
+- When the user should copy code, a script, or a shell command, put it in ONE fenced block: ```language (e.g. bash, python) newline … newline ``` The UI shows fenced blocks in a code panel; the spoken summary stays short.
 - When asked about something online, ALWAYS web_search then browser_open the best result automatically.
 - Use remember() for anything worth keeping long-term.
 - Use add_topic() to track ongoing subjects of interest — add them proactively.
@@ -86,7 +88,7 @@ Rules — your replies are spoken aloud via TTS:
 - Use add_concept() to push live insights to the sidebar (system alerts, findings, observations).
 - Use set_active_topic() when the user shifts focus to a different subject.
 - If an active topic exists, stay on that topic unless the user redirects you.
-- Summarize what you did; don't explain how."""
+- If the user's message begins with "[Typed in the UI", they pasted or typed exact text (IPs, passwords, keys) — never paraphrase those values; confirm before speaking them via TTS.
 
     mem = db.search_memories("", limit=5)
     if mem:
@@ -95,6 +97,11 @@ Rules — your replies are spoken aloud via TTS:
     active = db.get_active_topic()
     if active:
         base += f"\n\nActive topic: {active['title']} — {active['description']}. Keep responses focused here."
+
+    recent = db.recent_user_interactions(14)
+    if recent:
+        base += "\n\nRecent things this user has said (persisted across New Chat — infer habits, vocabulary, and recurring goals):\n"
+        base += "\n".join(f"— {line[:280]}" for line in recent)
 
     return base
 
@@ -680,16 +687,59 @@ def pin_topic(tid):
     return jsonify({"status": db.pin_topic(tid, pinned)})
 
 
+# ── Racing & media ops hub ────────────────────────────────────────────────────
+
+@app.route("/api/race-hub/items")
+def race_hub_list():
+    section = request.args.get("section") or None
+    query   = request.args.get("q", "").strip()
+    return jsonify({"items": race_hub.list_items(section=section, query=query)})
+
+
+@app.route("/api/race-hub/items", methods=["POST"])
+def race_hub_create():
+    data = request.json or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+    item = race_hub.create_item(
+        section    = data.get("section", "general"),
+        title      = title,
+        detail     = data.get("detail", ""),
+        status     = data.get("status", "unknown"),
+        link_url   = data.get("link_url", ""),
+        sort_order = data.get("sort_order", 0),
+    )
+    return jsonify(item)
+
+
+@app.route("/api/race-hub/items/<int:item_id>", methods=["PATCH"])
+def race_hub_update(item_id):
+    data = request.json or {}
+    item = race_hub.update_item(item_id, **data)
+    if not item:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/api/race-hub/items/<int:item_id>", methods=["DELETE"])
+def race_hub_delete(item_id):
+    ok = race_hub.delete_item(item_id)
+    return jsonify({"deleted": bool(ok)})
+
+
 # ── Chat ───────────────────────────────────────────────────────────────────────
 
-_CODE_RE = re.compile(r'```(\w*)\n?(.*?)```', re.DOTALL)
+_CODE_RE = re.compile(r"```\s*([\w._+#-]*)\s*\r?\n(.*?)```", re.DOTALL)
 
 def _extract_code_blocks(text: str) -> list:
+    """Pull fenced ``` blocks from the model reply for the UI code panel."""
     blocks = []
-    for m in _CODE_RE.finditer(text):
-        code = m.group(2).strip()
+    for m in _CODE_RE.finditer(text or ""):
+        lang = (m.group(1) or "text").strip() or "text"
+        code = (m.group(2) or "").strip()
         if code:
-            blocks.append({"lang": m.group(1) or "text", "code": code})
+            blocks.append({"lang": lang, "code": code})
     return blocks
 
 
@@ -707,6 +757,8 @@ def chat():
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
 
+    db.log_interaction("user", user_message)
+
     snippet = (user_message[:60] + "…") if len(user_message) > 60 else user_message
     _activity_push("user", snippet)
     _activity_set_current("thinking", snippet)
@@ -720,6 +772,7 @@ def chat():
         if len(conversation_history) > 40:
             conversation_history = conversation_history[-40:]
         db.log_conversation(user_message, reply, [t["tool"] for t in tool_log])
+        db.log_interaction("assistant", reply)
 
         reply_snippet = (reply[:80] + "…") if len(reply) > 80 else reply
         _activity_push("reply", f"{reply_snippet}  ({time.time() - t_start:.1f}s)")

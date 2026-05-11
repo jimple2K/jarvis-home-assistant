@@ -82,6 +82,9 @@ export function useSpeech({ onInterim, onFinal }) {
       sessionTextRef.current = '';
       finalConfRef.current   = 0;
       recognitionRef.current = null;
+      // Mark as aborted so the followup onend() doesn't fire a second onFinal
+      // and clobber the real error with a silent "rejected".
+      abortedRef.current = true;
       if (onFinal) onFinal('', errType);
     };
 
