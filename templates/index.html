@@ -416,6 +416,7 @@
 /* ── State ── */
 let alwaysOn = false, isListening = false, isBusy = false;
 let recognition = null, micId = "";
+let _sessionText = '';   // transcript for the current recognition session only
 
 const stateLabel = document.getElementById('state-label');
 const txYou      = document.getElementById('tx-you');
@@ -458,7 +459,11 @@ function startListening() {
   recognition.interimResults = true;
   recognition.lang = 'en-US';
 
-  recognition.onstart  = () => setState('listening');
+  recognition.onstart  = () => {
+    _sessionText = '';          // reset for this session — never carry over old text
+    txYou.textContent = '';
+    setState('listening');
+  };
   recognition.onresult = e => {
     let interim = '', final = '';
     recognition._finalConf = 0;
@@ -471,18 +476,21 @@ function startListening() {
         interim += e.results[i][0].transcript;
       }
     }
-    txYou.textContent = (final || interim).trim();
+    _sessionText = final || interim;          // store in session var, not DOM
+    txYou.textContent = _sessionText.trim();
   };
   recognition.onerror = e => {
     isListening = false;
+    _sessionText = '';
     if (e.error === 'no-speech' && alwaysOn) { isBusy = false; setTimeout(startListening, 800); return; }
     setState(''); isBusy = false;
     if (alwaysOn) setTimeout(() => { if (!isBusy) startListening(); }, 1500);
   };
   recognition.onend = async () => {
     isListening = false;
-    const text  = txYou.textContent.trim();
-    const conf  = recognition._finalConf || 0;
+    const text = _sessionText.trim();
+    const conf = recognition._finalConf || 0;
+    _sessionText = '';                        // always clear — never bleed into next session
     const words = text.split(/\s+/).filter(Boolean).length;
     // Reject: empty, single-word noise, or low confidence
     if (!text || words < 2 || (conf > 0 && conf < 0.50)) {
@@ -533,9 +541,11 @@ async function speakPiper(text) {
     if (res.status === 503) {
       const d = await res.json();
       txJarvis.textContent += ` [Voice "${d.voice}" not downloaded — open Settings]`;
+    } else if (res.status === 500) {
+      const d = await res.json().catch(()=>({}));
+      console.warn('TTS error:', d.error);
     }
-    // 204 = playback finished normally; any status = done either way
-  } catch(e) { /* network error, still continue */ }
+  } catch(e) { /* network error */ }
   done();
 }
 function done() {

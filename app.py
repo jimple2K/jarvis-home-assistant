@@ -276,12 +276,7 @@ def _tts_speak(text: str):
                     piper.stdout, _piper_sr(config),
                     style=cfg["tts_style"], volume=cfg["tts_volume"], speed=cfg["tts_speed"],
                 )
-                cmd = ["paplay", "--raw", "--format=s16le", f"--rate={TARGET_SR}", "--channels=2"]
-                sink = cfg.get("tts_sink", "").strip()
-                if sink:
-                    cmd += [f"--device={sink}"]
-                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-                proc.communicate(input=pcm)
+                _paplay(pcm, cfg.get("tts_sink", "").strip())
             except Exception:
                 pass
     threading.Thread(target=_run, daemon=True, name="ssh-tts").start()
@@ -311,6 +306,20 @@ def audio_sinks():
         return jsonify({"sinks": sinks})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def _paplay(pcm: bytes, sink: str = ""):
+    """Play raw s16le 48kHz stereo PCM via paplay. Falls back to system default if sink fails."""
+    global _tts_proc
+    base = ["paplay", "--raw", "--format=s16le", f"--rate={TARGET_SR}", "--channels=2"]
+    sinks_to_try = [sink, ""] if sink else [""]
+    for s in sinks_to_try:
+        cmd = base + ([f"--device={s}"] if s else [])
+        _tts_proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        _tts_proc.communicate(input=pcm)
+        if _tts_proc.returncode == 0:
+            return
+    # Both failed — not a hard error, audio just didn't play
 
 
 @app.route("/tts/stop", methods=["POST"])
@@ -358,14 +367,8 @@ def tts():
                 speed=cfg["tts_speed"],
             )
 
-            cmd = ["paplay", "--raw", "--format=s16le",
-                   f"--rate={TARGET_SR}", "--channels=2"]
             sink = cfg.get("tts_sink", "").strip()
-            if sink:
-                cmd += [f"--device={sink}"]
-
-            _tts_proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-            _tts_proc.communicate(input=pcm)
+            _paplay(pcm, sink)
             return ("", 204)
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -518,7 +521,7 @@ def concepts_status():
         hostname = _s.gethostname()
         db.add_concept(
             f"[{hostname}] CPU {cpu:.0f}% · RAM {mem.percent:.0f}% · Disk {disk.percent:.0f}%",
-            "system", ttl_minutes=2
+            "system", ttl_minutes=2, key=f"[{hostname}]"
         )
         if cpu  > 80: db.add_concept(f"⚠ [{hostname}] High CPU {cpu:.0f}%",  "warning", 5)
         if mem.percent > 88: db.add_concept(f"⚠ [{hostname}] RAM {mem.percent:.0f}%", "warning", 5)
@@ -536,7 +539,7 @@ def concepts_status():
             live_mark = "🟢" if m.get("live") else "🔴"
             db.add_concept(
                 f"{live_mark} [{hn}] CPU {m['cpu_pct']}% · RAM {m['mem_pct']}% · Disk {m['disk_pct']}%",
-                "network", ttl_minutes=3
+                "network", ttl_minutes=3, key=f"[{hn}]"
             )
             if m.get("cpu_pct", 0)  > 80: db.add_concept(f"⚠ [{hn}] High CPU {m['cpu_pct']}%",  "warning", 5)
             if m.get("mem_pct", 0)  > 88: db.add_concept(f"⚠ [{hn}] RAM {m['mem_pct']}%",       "warning", 5)
