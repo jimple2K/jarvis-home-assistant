@@ -1,14 +1,15 @@
 import os
+import re
 import subprocess
 import shutil
-import glob
 import psutil
 import socket
 import platform
 import datetime
-import base64
 import urllib.request
+import urllib.parse
 import urllib.error
+import browser as _browser
 
 
 def _run(cmd, timeout=30, cwd=None):
@@ -289,10 +290,63 @@ def web_fetch(url: str, max_chars: int = 8000) -> str:
 
 
 def web_search(query: str) -> str:
-    # Use DuckDuckGo lite (text-only, no JS)
-    import urllib.parse
-    url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
-    return web_fetch(url, max_chars=5000)
+    """Search DuckDuckGo and return titles, URLs, and snippets."""
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+
+        results = []
+        # Extract result blocks
+        blocks = re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
+        for href, title, snippet in blocks[:8]:
+            # DuckDuckGo wraps URLs — decode the actual destination
+            if "uddg=" in href:
+                m = re.search(r"uddg=([^&]+)", href)
+                if m:
+                    href = urllib.parse.unquote(m.group(1))
+            title   = re.sub(r"<[^>]+>", "", title).strip()
+            snippet = re.sub(r"<[^>]+>", "", snippet).strip()
+            results.append(f"• {title}\n  {href}\n  {snippet}")
+
+        return "\n\n".join(results) if results else web_fetch(
+            f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}", max_chars=4000
+        )
+    except Exception as e:
+        return f"Search error: {e}"
+
+
+# ── Browser control ───────────────────────────────────────────────────────────
+
+def browser_open(url: str) -> str:
+    """Open a URL in Jarvis's controlled Firefox window so the user can see it."""
+    return _browser.open_url(url)
+
+
+def browser_close(tab_id: str = "all") -> str:
+    """Close a browser tab by ID, or 'all' to close every tab."""
+    return _browser.close_tab(tab_id)
+
+
+def browser_list_tabs() -> str:
+    """List all tabs currently open in the Jarvis browser."""
+    return _browser.list_tabs()
+
+
+def browser_get_content(tab_id: int) -> str:
+    """Read the visible text content of a browser tab."""
+    return _browser.get_tab_content(tab_id)
+
+
+def browser_navigate(tab_id: int, url: str) -> str:
+    """Navigate an existing tab to a new URL."""
+    return _browser.navigate_tab(tab_id, url)
+
+
+def browser_screenshot(tab_id: int, path: str = "") -> str:
+    """Take a screenshot of a browser tab and save it to disk."""
+    return _browser.screenshot_tab(tab_id, path)
 
 
 # ── Cron / scheduled tasks ────────────────────────────────────────────────────
@@ -315,28 +369,34 @@ def cron_add(schedule: str, command: str) -> str:
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_FUNCTIONS = {
-    "bash":            bash,
-    "read_file":       read_file,
-    "write_file":      write_file,
-    "append_file":     append_file,
-    "list_directory":  list_directory,
-    "search_files":    search_files,
-    "delete_file":     delete_file,
-    "move_file":       move_file,
-    "copy_file":       copy_file,
-    "get_system_info": get_system_info,
-    "list_processes":  list_processes,
-    "kill_process":    kill_process,
-    "get_network_info":get_network_info,
-    "notify":          notify,
-    "screenshot":      screenshot,
-    "get_clipboard":   get_clipboard,
-    "set_clipboard":   set_clipboard,
-    "open_application":open_application,
-    "web_fetch":       web_fetch,
-    "web_search":      web_search,
-    "cron_list":       cron_list,
-    "cron_add":        cron_add,
+    "bash":               bash,
+    "read_file":          read_file,
+    "write_file":         write_file,
+    "append_file":        append_file,
+    "list_directory":     list_directory,
+    "search_files":       search_files,
+    "delete_file":        delete_file,
+    "move_file":          move_file,
+    "copy_file":          copy_file,
+    "get_system_info":    get_system_info,
+    "list_processes":     list_processes,
+    "kill_process":       kill_process,
+    "get_network_info":   get_network_info,
+    "notify":             notify,
+    "screenshot":         screenshot,
+    "get_clipboard":      get_clipboard,
+    "set_clipboard":      set_clipboard,
+    "open_application":   open_application,
+    "web_fetch":          web_fetch,
+    "web_search":         web_search,
+    "cron_list":          cron_list,
+    "cron_add":           cron_add,
+    "browser_open":       browser_open,
+    "browser_close":      browser_close,
+    "browser_list_tabs":  browser_list_tabs,
+    "browser_get_content":browser_get_content,
+    "browser_navigate":   browser_navigate,
+    "browser_screenshot": browser_screenshot,
 }
 
 TOOL_SCHEMAS = [
@@ -620,6 +680,86 @@ TOOL_SCHEMAS = [
                     "command": {"type": "string"}
                 },
                 "required": ["schedule", "command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_open",
+            "description": "Open a URL in Jarvis's controlled Firefox browser window so the user can see the page. Use this to showcase search results, news, videos, documentation, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to open (must start with http:// or https://)"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_close",
+            "description": "Close a browser tab by its ID number, or pass 'all' to close all open tabs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "string", "description": "Tab ID number (e.g. '1') or 'all'"}
+                },
+                "required": ["tab_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_list_tabs",
+            "description": "List all currently open tabs in the Jarvis browser with their IDs, titles, and URLs.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_get_content",
+            "description": "Read the visible text content of an open browser tab. Useful to extract info from a page you opened.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "integer", "description": "Tab ID from browser_list_tabs or browser_open"}
+                },
+                "required": ["tab_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_navigate",
+            "description": "Navigate an already-open tab to a new URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "integer"},
+                    "url": {"type": "string"}
+                },
+                "required": ["tab_id", "url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "Take a screenshot of an open browser tab and save it to disk.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "integer"},
+                    "path": {"type": "string", "description": "Where to save the PNG (optional)"}
+                },
+                "required": ["tab_id"]
             }
         }
     },
