@@ -89,6 +89,7 @@ Rules — your replies are spoken aloud via TTS:
 - Use set_active_topic() when the user shifts focus to a different subject.
 - If an active topic exists, stay on that topic unless the user redirects you.
 - If the user's message begins with "[Typed in the UI", they pasted or typed exact text (IPs, passwords, keys) — never paraphrase those values; confirm before speaking them via TTS.
+- Summarize what you did; don't explain how."""
 
     mem = db.search_memories("", limit=5)
     if mem:
