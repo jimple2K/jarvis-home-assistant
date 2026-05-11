@@ -151,10 +151,50 @@ def agent_loop(user_message, history):
 
 # ── Piper TTS ─────────────────────────────────────────────────────────────────
 
+TARGET_SR = 48000   # match system default — avoids PipeWire resampling music
+
 def _voices_dir():
     d = os.path.expanduser("~/.local/share/piper")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _resample_to_stereo_48k(raw_pcm: bytes, src_sr: int) -> bytes:
+    """
+    Resample 16-bit mono PCM from src_sr to 48000Hz stereo using numpy.
+    High-quality linear interpolation — keeps PipeWire in float32 48kHz mode
+    so background audio is never degraded.
+    """
+    import numpy as np
+    samples = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    if src_sr != TARGET_SR:
+        ratio       = TARGET_SR / src_sr
+        old_len     = len(samples)
+        new_len     = int(old_len * ratio)
+        old_indices = np.linspace(0, old_len - 1, new_len)
+        samples     = np.interp(old_indices, np.arange(old_len), samples)
+    # Mono → stereo (duplicate channel)
+    stereo = np.column_stack([samples, samples])
+    return (stereo * 32767).clip(-32768, 32767).astype(np.int16).tobytes()
+
+
+def _make_wav(pcm: bytes, sr: int, channels: int) -> bytes:
+    byte_rate  = sr * channels * 2
+    block_align = channels * 2
+    data_size  = len(pcm)
+    return (
+        b"RIFF" + (36 + data_size).to_bytes(4, "little") +
+        b"WAVE" +
+        b"fmt " + (16).to_bytes(4, "little") +
+        (1).to_bytes(2, "little") +            # PCM
+        channels.to_bytes(2, "little") +
+        sr.to_bytes(4, "little") +
+        byte_rate.to_bytes(4, "little") +
+        block_align.to_bytes(2, "little") +
+        (16).to_bytes(2, "little") +           # bits per sample
+        b"data" + data_size.to_bytes(4, "little") +
+        pcm
+    )
 
 
 @app.route("/tts", methods=["POST"])
@@ -179,16 +219,20 @@ def tts():
         )
         if proc.returncode != 0 or not proc.stdout:
             raise RuntimeError(proc.stderr.decode())
-        raw  = proc.stdout
-        sr   = 22050
-        hdr  = (
-            b"RIFF" + (36 + len(raw)).to_bytes(4, "little") + b"WAVE" +
-            b"fmt " + (16).to_bytes(4, "little") + (1).to_bytes(2, "little") +
-            (1).to_bytes(2, "little") + sr.to_bytes(4, "little") +
-            (sr * 2).to_bytes(4, "little") + (2).to_bytes(2, "little") +
-            (16).to_bytes(2, "little") + b"data" + len(raw).to_bytes(4, "little")
-        )
-        return Response(hdr + raw, mimetype="audio/wav")
+
+        # Piper outputs 22050Hz (medium) or 16000Hz (low) mono 16-bit PCM.
+        # Read actual sample rate from the voice config json.
+        piper_sr = 22050
+        try:
+            import json as _json
+            with open(config) as f:
+                piper_sr = _json.load(f).get("audio", {}).get("sample_rate", 22050)
+        except Exception:
+            pass
+
+        pcm_48k_stereo = _resample_to_stereo_48k(proc.stdout, piper_sr)
+        wav = _make_wav(pcm_48k_stereo, TARGET_SR, channels=2)
+        return Response(wav, mimetype="audio/wav")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
