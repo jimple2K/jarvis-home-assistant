@@ -17,10 +17,15 @@ A local home assistant powered by [LM Studio](https://lmstudio.ai/) running on y
 
 3. **Start LM Studio** on your AI server with the local API server enabled (default port `1234`).
 
-4. **Run Jarvis**
+4. **Run Jarvis** (recommended: one script does venv, pip, frontend build, server, and opens the UI)
+
    ```bash
-   python main.py
+   ./launch.sh
    ```
+
+   Or double-click **`Jarvis.desktop`** on your desktop — it runs the same `launch.sh` with `Path` set to this repo. Logs: `.jarvis-server.log`, PID: `.jarvis.pid`.
+
+   Legacy CLI: `python main.py` (does not start the web UI).
 
 ## Configuration
 
