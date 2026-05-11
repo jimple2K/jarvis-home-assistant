@@ -50,6 +50,22 @@ def init_schema():
         c.executescript(SCHEMA)
 
 
+# ── Speech callback (set by app.py so SSH events speak through Jarvis TTS) ───
+
+_speech_cb = None
+
+def set_speech_callback(fn):
+    global _speech_cb
+    _speech_cb = fn
+
+def _speak(text: str):
+    if _speech_cb:
+        try:
+            _speech_cb(text)
+        except Exception:
+            pass
+
+
 # ── In-memory connection pool ─────────────────────────────────────────────────
 
 class _HostState:
@@ -207,6 +223,7 @@ def _monitor(hostname: str):
                         f"{hostname} ({host['ip']}) lost SSH connection.",
                         urgency="critical")
                 _set_concept(hostname, f"✗ {hostname} — SSH lost", "warning", 60)
+                _speak(f"Warning: lost SSH connection to {hostname}.")
                 with _lock, _conn() as c:
                     c.execute("UPDATE ssh_hosts SET last_error='Connection lost' WHERE id=?", (host["id"],))
                 was_connected = False
@@ -229,6 +246,7 @@ def _monitor(hostname: str):
                             f"{hostname} ({host['ip']}) SSH connected.",
                             urgency="normal")
                     _set_concept(hostname, f"✓ {hostname} — SSH live", "network", 120)
+                    _speak(f"{hostname} is online. SSH connection established.")
                     with _lock, _conn() as c:
                         c.execute("UPDATE ssh_hosts SET last_seen=datetime('now'), last_error='' WHERE id=?",
                                   (host["id"],))

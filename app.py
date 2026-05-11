@@ -25,6 +25,10 @@ def get_config():
         "model":       os.getenv("LM_STUDIO_MODEL",   "local-model"),
         "api_key":     os.getenv("LM_STUDIO_API_KEY", ""),
         "piper_voice": os.getenv("PIPER_VOICE",       "en_US-amy-medium"),
+        "tts_sink":    os.getenv("TTS_SINK",           ""),
+        "tts_style":   os.getenv("TTS_STYLE",          "natural"),
+        "tts_speed":   float(os.getenv("TTS_SPEED",    "1.0")),
+        "tts_volume":  float(os.getenv("TTS_VOLUME",   "1.0")),
     }
 
 
@@ -149,13 +153,11 @@ def agent_loop(user_message, history):
     return "Done.", tool_log
 
 
-# ── Piper TTS — server-side playback via paplay ───────────────────────────────
-# Audio never touches Chrome. Piper → resample → paplay → PipeWire natively.
-# The browser just waits for the HTTP response to know speech is done.
+# ── Piper TTS — server-side via paplay, zero Chrome audio involvement ─────────
 
-TARGET_SR   = 48000
-_tts_lock   = threading.Lock()   # one utterance at a time
-_tts_proc   = None               # current paplay process (for interruption)
+TARGET_SR = 48000
+_tts_lock = threading.Lock()
+_tts_proc = None
 
 
 def _voices_dir():
@@ -172,9 +174,73 @@ def _piper_sr(config_path: str) -> int:
         return 22050
 
 
-def _resample_stereo(raw: bytes, src_sr: int) -> bytes:
+def _apply_style(samples, style: str, volume: float, speed: float):
+    """Apply EQ style + volume + speed to float32 mono samples."""
+    import numpy as np
+
+    # Volume
+    samples = samples * volume
+
+    # Speed — resample (changes pitch too, intentional for simplicity)
+    if abs(speed - 1.0) > 0.01:
+        n_new   = int(len(samples) / speed)
+        samples = np.interp(
+            np.linspace(0, len(samples) - 1, n_new),
+            np.arange(len(samples)),
+            samples,
+        )
+
+    if style == "enhanced":
+        # Subtle presence boost — FIR high-shelf at ~3kHz
+        kernel = np.array([0.02, -0.05, 0.12, 1.0, 0.12, -0.05, 0.02])
+        kernel /= kernel.sum()
+        samples = np.convolve(samples, kernel, mode="same")
+
+    elif style == "warm":
+        # Gentle low-pass — softens harsh highs for Bluetooth
+        n = 31
+        fc = 5000 / TARGET_SR
+        h  = np.sinc(2 * fc * (np.arange(n) - n // 2))
+        h *= np.hanning(n)
+        h /= h.sum()
+        samples = np.convolve(samples, h, mode="same")
+
+    elif style == "crisp":
+        # High-pass removes muddiness + slight treble lift
+        n  = 31
+        fc = 200 / TARGET_SR
+        h  = np.sinc(2 * fc * (np.arange(n) - n // 2))
+        h *= np.hanning(n)
+        h /= h.sum()
+        hp = -h.copy()
+        hp[n // 2] += 1.0
+        samples = np.convolve(samples, hp, mode="same")
+
+    elif style == "broadcast":
+        # Bandpass 300–8000 Hz + normalize (classic radio/podcast sound)
+        n   = 63
+        lo  = 300  / TARGET_SR
+        hi  = 8000 / TARGET_SR
+        win = np.hanning(n)
+        h_lo = np.sinc(2 * lo * (np.arange(n) - n // 2)) * win
+        h_hi = np.sinc(2 * hi * (np.arange(n) - n // 2)) * win
+        bp = h_hi - h_lo
+        bp /= bp.sum() or 1
+        samples = np.convolve(samples, bp, mode="same")
+        # Normalize
+        peak = np.max(np.abs(samples))
+        if peak > 0:
+            samples = samples / peak * 0.92
+
+    # Final clip
+    return np.clip(samples, -1.0, 1.0)
+
+
+def _resample_stereo(raw: bytes, src_sr: int, style: str, volume: float, speed: float) -> bytes:
     import numpy as np
     samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+    # Resample to 48kHz
     if src_sr != TARGET_SR:
         n_new   = int(len(samples) * TARGET_SR / src_sr)
         samples = np.interp(
@@ -182,8 +248,69 @@ def _resample_stereo(raw: bytes, src_sr: int) -> bytes:
             np.arange(len(samples)),
             samples,
         )
-    stereo = np.column_stack([samples, samples])
+
+    samples = _apply_style(samples, style, volume, speed)
+    stereo  = np.column_stack([samples, samples])
     return (stereo * 32767).clip(-32768, 32767).astype(np.int16).tobytes()
+
+
+def _tts_speak(text: str):
+    """Fire-and-forget TTS for background threads (SSH monitor events, etc.)."""
+    def _run():
+        cfg    = get_config()
+        voice  = cfg["piper_voice"]
+        vdir   = _voices_dir()
+        model  = os.path.join(vdir, f"{voice}.onnx")
+        config = os.path.join(vdir, f"{voice}.onnx.json")
+        if not os.path.exists(model):
+            return
+        with _tts_lock:
+            try:
+                piper = subprocess.run(
+                    ["piper", "--model", model, "--config", config, "--output-raw"],
+                    input=text.encode(), capture_output=True, timeout=30,
+                )
+                if piper.returncode != 0 or not piper.stdout:
+                    return
+                pcm = _resample_stereo(
+                    piper.stdout, _piper_sr(config),
+                    style=cfg["tts_style"], volume=cfg["tts_volume"], speed=cfg["tts_speed"],
+                )
+                cmd = ["paplay", "--raw", "--format=s16le", f"--rate={TARGET_SR}", "--channels=2"]
+                sink = cfg.get("tts_sink", "").strip()
+                if sink:
+                    cmd += [f"--device={sink}"]
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+                proc.communicate(input=pcm)
+            except Exception:
+                pass
+    threading.Thread(target=_run, daemon=True, name="ssh-tts").start()
+
+
+# Register so SSH monitor threads can speak through Jarvis
+ssh.set_speech_callback(_tts_speak)
+
+
+@app.route("/api/audio/sinks")
+def audio_sinks():
+    try:
+        raw = subprocess.run(
+            ["pactl", "list", "sinks"],
+            capture_output=True, text=True, timeout=5
+        ).stdout
+        sinks = []
+        current = {}
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("Name:"):
+                current["name"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Description:"):
+                current["desc"] = line.split(":", 1)[1].strip()
+                sinks.append(dict(current))
+                current = {}
+        return jsonify({"sinks": sinks})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/tts/stop", methods=["POST"])
@@ -197,13 +324,14 @@ def tts_stop():
 @app.route("/tts", methods=["POST"])
 def tts():
     global _tts_proc
-    text  = request.json.get("text", "").strip()
-    voice = get_config()["piper_voice"]
+    text = request.json.get("text", "").strip()
     if not text:
         return ("", 204)
     text = re.sub(r"[*_`#>]", "", text)
 
-    vdir   = _voices_dir()
+    cfg   = get_config()
+    voice = cfg["piper_voice"]
+    vdir  = _voices_dir()
     model  = os.path.join(vdir, f"{voice}.onnx")
     config = os.path.join(vdir, f"{voice}.onnx.json")
 
@@ -211,11 +339,9 @@ def tts():
         return jsonify({"error": "voice_not_downloaded", "voice": voice}), 503
 
     with _tts_lock:
-        # Stop anything currently playing
         if _tts_proc and _tts_proc.poll() is None:
             _tts_proc.terminate()
             _tts_proc.wait()
-
         try:
             piper = subprocess.run(
                 ["piper", "--model", model, "--config", config, "--output-raw"],
@@ -224,20 +350,22 @@ def tts():
             if piper.returncode != 0 or not piper.stdout:
                 raise RuntimeError(piper.stderr.decode())
 
-            pcm = _resample_stereo(piper.stdout, _piper_sr(config))
-
-            # Play via paplay — raw s16le 48kHz stereo, directly to PipeWire
-            _tts_proc = subprocess.Popen(
-                [
-                    "paplay",
-                    "--raw",
-                    "--format=s16le",
-                    f"--rate={TARGET_SR}",
-                    "--channels=2",
-                ],
-                stdin=subprocess.PIPE,
+            pcm = _resample_stereo(
+                piper.stdout,
+                _piper_sr(config),
+                style=cfg["tts_style"],
+                volume=cfg["tts_volume"],
+                speed=cfg["tts_speed"],
             )
-            _tts_proc.communicate(input=pcm)  # blocks until playback done
+
+            cmd = ["paplay", "--raw", "--format=s16le",
+                   f"--rate={TARGET_SR}", "--channels=2"]
+            sink = cfg.get("tts_sink", "").strip()
+            if sink:
+                cmd += [f"--device={sink}"]
+
+            _tts_proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            _tts_proc.communicate(input=pcm)
             return ("", 204)
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -362,26 +490,57 @@ def ssh_run():
     return jsonify({"output": out})
 
 
-# ── Concepts (auto-generated system insights) ─────────────────────────────────
+@app.route("/api/ssh/test/<hostname>", methods=["POST"])
+def ssh_test(hostname):
+    host = ssh.get_host(hostname)
+    if not host:
+        return jsonify({"ok": False, "error": "Not configured"}), 404
+    try:
+        out = ssh.run_remote(hostname, "echo OK && uname -sr && uptime -p")
+        ok  = "OK" in out
+        return jsonify({"ok": ok, "output": out})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+# ── Concepts — local + remote machine stats ────────────────────────────────────
 
 @app.route("/api/concepts")
 def concepts_status():
-    import psutil, datetime
+    import psutil
 
-    # Auto-generate live concepts from system state
-    auto = []
+    # ── Local machine ──
     try:
-        cpu = psutil.cpu_percent(interval=0.3)
-        mem = psutil.virtual_memory()
+        cpu  = psutil.cpu_percent(interval=0.3)
+        mem  = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
-        if cpu > 70:
-            db.add_concept(f"High CPU: {cpu:.0f}%", "warning", ttl_minutes=5)
-        if mem.percent > 85:
-            db.add_concept(f"RAM critical: {mem.percent:.0f}%", "warning", ttl_minutes=5)
-        if disk.percent > 90:
-            db.add_concept(f"Disk almost full: {disk.percent:.0f}%", "warning", ttl_minutes=30)
+        import socket as _s
+        hostname = _s.gethostname()
+        db.add_concept(
+            f"[{hostname}] CPU {cpu:.0f}% · RAM {mem.percent:.0f}% · Disk {disk.percent:.0f}%",
+            "system", ttl_minutes=2
+        )
+        if cpu  > 80: db.add_concept(f"⚠ [{hostname}] High CPU {cpu:.0f}%",  "warning", 5)
+        if mem.percent > 88: db.add_concept(f"⚠ [{hostname}] RAM {mem.percent:.0f}%", "warning", 5)
+        if disk.percent > 90: db.add_concept(f"⚠ [{hostname}] Disk full {disk.percent:.0f}%", "warning", 30)
+    except Exception:
+        pass
 
-        db.add_concept(f"CPU {cpu:.0f}% · RAM {mem.percent:.0f}% · Disk {disk.percent:.0f}%", "system", ttl_minutes=2)
+    # ── Remote SSH machines — use cached last metrics, non-blocking ──
+    try:
+        for host in ssh.list_hosts():
+            hn = host["hostname"]
+            m  = ssh.get_recent_metrics(hn)
+            if not m:
+                continue
+            live_mark = "🟢" if m.get("live") else "🔴"
+            db.add_concept(
+                f"{live_mark} [{hn}] CPU {m['cpu_pct']}% · RAM {m['mem_pct']}% · Disk {m['disk_pct']}%",
+                "network", ttl_minutes=3
+            )
+            if m.get("cpu_pct", 0)  > 80: db.add_concept(f"⚠ [{hn}] High CPU {m['cpu_pct']}%",  "warning", 5)
+            if m.get("mem_pct", 0)  > 88: db.add_concept(f"⚠ [{hn}] RAM {m['mem_pct']}%",       "warning", 5)
+            if m.get("disk_pct", 0) > 90: db.add_concept(f"⚠ [{hn}] Disk full {m['disk_pct']}%","warning", 30)
     except Exception:
         pass
 
@@ -467,6 +626,10 @@ def save_config():
         "model":       "LM_STUDIO_MODEL",
         "api_key":     "LM_STUDIO_API_KEY",
         "piper_voice": "PIPER_VOICE",
+        "tts_sink":    "TTS_SINK",
+        "tts_style":   "TTS_STYLE",
+        "tts_speed":   "TTS_SPEED",
+        "tts_volume":  "TTS_VOLUME",
     }.items():
         if k in data:
             set_key(env_path, v, data[k])

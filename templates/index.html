@@ -56,9 +56,21 @@
     #settings {
       position:fixed;top:0;right:0;width:340px;height:100vh;
       background:var(--bg1);border-left:1px solid var(--border);
-      padding:56px 18px 18px;display:flex;flex-direction:column;gap:12px;
+      padding:18px;display:flex;flex-direction:column;gap:12px;
       transform:translateX(100%);transition:transform .25s;z-index:200;overflow-y:auto;
     }
+    #settings-close {
+      position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;
+      background:var(--bg1);padding-bottom:10px;border-bottom:1px solid var(--border);
+      margin-bottom:2px;flex-shrink:0;
+    }
+    #settings-close span { font-size:11px;color:var(--blue);text-transform:uppercase;letter-spacing:1px; }
+    #settings-close button {
+      background:var(--bg3);border:1px solid var(--border);border-radius:6px;
+      color:var(--muted);width:28px;height:28px;font-size:16px;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;line-height:1;
+    }
+    #settings-close button:hover { background:var(--border);color:var(--txt); }
     #settings.open { transform:translateX(0); }
     .sg { display:flex;flex-direction:column;gap:5px; }
     .sg label { font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px; }
@@ -311,6 +323,11 @@
 
 <!-- Settings drawer -->
 <div id="settings">
+  <div id="settings-close">
+    <span>Settings</span>
+    <button onclick="toggleSettings()" title="Close">✕</button>
+  </div>
+
   <h3>LM Studio</h3>
   <div class="sg"><label>API URL</label>
     <input id="cfg-url" type="text" value="{{ config.url }}"/></div>
@@ -330,19 +347,50 @@
     <select id="mic-select"><option value="">Default</option></select></div>
 
   <hr/>
-  <h3>Piper TTS Voice</h3>
-  <div class="sg"><label>Voice</label>
+  <h3>Voice &amp; Audio Output</h3>
+
+  <div class="sg"><label>Piper Voice</label>
     <select id="cfg-voice">
       <option value="en_US-amy-medium">en_US-amy-medium</option>
       <option value="en_US-lessac-medium">en_US-lessac-medium</option>
-      <option value="en_US-ryan-high">en_US-ryan-high</option>
+      <option value="en_US-ryan-high">en_US-ryan-high (best quality)</option>
       <option value="en_GB-alan-medium">en_GB-alan-medium</option>
+      <option value="en_GB-jenny-diphone">en_GB-jenny-diphone</option>
     </select>
   </div>
   <div class="srow">
     <button class="sbtn" onclick="downloadVoice()">Download Voice</button>
     <span id="dl-msg"></span>
   </div>
+
+  <div class="sg"><label>Output Device</label>
+    <select id="cfg-sink">
+      <option value="">System Default</option>
+    </select>
+  </div>
+
+  <div class="sg"><label>Audio Style</label>
+    <select id="cfg-style">
+      <option value="natural">Natural — clean pass-through</option>
+      <option value="enhanced">Enhanced — presence boost, fuller sound</option>
+      <option value="warm">Warm — softer highs, great for Bluetooth</option>
+      <option value="crisp">Crisp — removes mud, clear articulation</option>
+      <option value="broadcast">Broadcast — bandpass + normalize (podcast feel)</option>
+    </select>
+  </div>
+
+  <div class="sg">
+    <label>Speed <span id="speed-val" style="color:var(--txt)">1.0×</span></label>
+    <input id="cfg-speed" type="range" min="0.6" max="1.8" step="0.05" value="1.0" style="padding:0"/>
+  </div>
+
+  <div class="sg">
+    <label>Volume <span id="vol-val" style="color:var(--txt)">1.0×</span></label>
+    <input id="cfg-volume" type="range" min="0.3" max="2.0" step="0.05" value="1.0" style="padding:0"/>
+  </div>
+
+  <button class="sbtn p" onclick="saveAudio()">Apply Audio Settings</button>
+  <button class="sbtn" onclick="testTts()">▶ Test Voice</button>
 
   <hr/>
   <h3>SSH Hosts</h3>
@@ -355,8 +403,10 @@
   <div class="sg"><label>Password (optional)</label><input id="ssh-pass" type="password" placeholder="leave blank if using key"/></div>
   <div class="srow">
     <button class="sbtn p" onclick="addSshHost()">Add &amp; Monitor</button>
+    <button class="sbtn" onclick="testSshHost()">Test</button>
     <span id="ssh-msg" style="font-size:10px;color:var(--green);"></span>
   </div>
+  <div id="ssh-test-out" style="font-size:10px;color:var(--muted);font-family:monospace;white-space:pre-wrap;max-height:60px;overflow:auto;"></div>
 
   <hr/>
   <button class="sbtn d" onclick="resetConversation()">Clear Conversation</button>
@@ -628,6 +678,72 @@ async function downloadVoice() {
   msg.textContent='Done!'; setTimeout(()=>msg.textContent='',3000);
 }
 
+async function loadAudioSinks() {
+  try {
+    const res  = await fetch('/api/audio/sinks');
+    const data = await res.json();
+    const sel  = document.getElementById('cfg-sink');
+    const cur  = sel.value;
+    sel.innerHTML = '<option value="">System Default</option>';
+    (data.sinks||[]).forEach(s => {
+      const o = document.createElement('option');
+      o.value = s.name;
+      o.textContent = s.desc || s.name;
+      sel.appendChild(o);
+    });
+    if (cur) sel.value = cur;
+  } catch {}
+}
+
+async function saveAudio() {
+  await fetch('/config', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      piper_voice: document.getElementById('cfg-voice').value,
+      tts_sink:    document.getElementById('cfg-sink').value,
+      tts_style:   document.getElementById('cfg-style').value,
+      tts_speed:   document.getElementById('cfg-speed').value,
+      tts_volume:  document.getElementById('cfg-volume').value,
+    })
+  });
+  flash('sv-msg', 'Audio saved!');
+}
+
+async function testTts() {
+  await fetch('/config', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      piper_voice: document.getElementById('cfg-voice').value,
+      tts_sink:    document.getElementById('cfg-sink').value,
+      tts_style:   document.getElementById('cfg-style').value,
+      tts_speed:   document.getElementById('cfg-speed').value,
+      tts_volume:  document.getElementById('cfg-volume').value,
+    })
+  });
+  setState('speaking');
+  await fetch('/tts', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ text: "Hello, I am Jarvis. Audio test complete." })
+  });
+  setState('');
+}
+
+async function testSshHost() {
+  const hn  = document.getElementById('ssh-hostname').value.trim();
+  const out = document.getElementById('ssh-test-out');
+  const msg = document.getElementById('ssh-msg');
+  if (!hn) { flash('ssh-msg', 'Enter hostname first'); return; }
+  msg.textContent = 'Testing…';
+  out.textContent = '';
+  try {
+    const res  = await fetch(`/api/ssh/test/${hn}`, { method:'POST' });
+    const data = await res.json();
+    msg.textContent = data.ok ? '✓ Connected' : '✗ Failed';
+    msg.style.color = data.ok ? 'var(--green)' : 'var(--red)';
+    out.textContent = data.output || data.error || '';
+    setTimeout(() => { msg.textContent=''; msg.style.color='var(--green)'; }, 4000);
+  } catch(e) {
+    msg.textContent = '✗ Error'; msg.style.color = 'var(--red)';
+  }
+}
+
 async function resetConversation() {
   await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reset:true})});
   txYou.textContent=''; txJarvis.textContent='';
@@ -699,14 +815,28 @@ async function removeSshHost(hostname) {
   loadSshHosts(); loadTailscale();
 }
 
+/* ── Slider display ── */
+document.getElementById('cfg-speed').addEventListener('input', e => {
+  document.getElementById('speed-val').textContent = parseFloat(e.target.value).toFixed(2) + '×';
+});
+document.getElementById('cfg-volume').addEventListener('input', e => {
+  document.getElementById('vol-val').textContent = parseFloat(e.target.value).toFixed(2) + '×';
+});
+
 /* ── Init + polling ── */
 loadMics();
+loadAudioSinks();
 pingServer();
 loadTopics();
 loadTailscale();
 loadConcepts();
 loadSshHosts();
-document.getElementById('cfg-voice').value='{{ config.piper_voice }}';
+document.getElementById('cfg-voice').value  = '{{ config.piper_voice }}';
+document.getElementById('cfg-style').value  = '{{ config.tts_style }}';
+document.getElementById('cfg-speed').value  = '{{ config.tts_speed }}';
+document.getElementById('cfg-volume').value = '{{ config.tts_volume }}';
+document.getElementById('speed-val').textContent  = '{{ config.tts_speed }}×';
+document.getElementById('vol-val').textContent    = '{{ config.tts_volume }}×';
 
 setInterval(loadTopics,    5000);
 setInterval(loadTailscale, 10000);   // faster now — shows live SSH state
