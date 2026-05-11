@@ -460,23 +460,37 @@ function startListening() {
 
   recognition.onstart  = () => setState('listening');
   recognition.onresult = e => {
-    let interim='', final='';
-    for (let i=e.resultIndex;i<e.results.length;i++) {
-      if (e.results[i].isFinal) final   += e.results[i][0].transcript;
-      else                      interim += e.results[i][0].transcript;
+    let interim = '', final = '';
+    recognition._finalConf = 0;
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) {
+        final += e.results[i][0].transcript;
+        if (e.results[i][0].confidence > recognition._finalConf)
+          recognition._finalConf = e.results[i][0].confidence;
+      } else {
+        interim += e.results[i][0].transcript;
+      }
     }
-    txYou.textContent = (final||interim).trim();
+    txYou.textContent = (final || interim).trim();
   };
   recognition.onerror = e => {
     isListening = false;
-    if (e.error==='no-speech' && alwaysOn) { isBusy=false; setTimeout(startListening,500); return; }
+    if (e.error === 'no-speech' && alwaysOn) { isBusy = false; setTimeout(startListening, 800); return; }
     setState(''); isBusy = false;
-    if (alwaysOn) setTimeout(()=>{ if(!isBusy) startListening(); }, 1500);
+    if (alwaysOn) setTimeout(() => { if (!isBusy) startListening(); }, 1500);
   };
   recognition.onend = async () => {
     isListening = false;
-    const text = txYou.textContent.trim();
-    if (!text) { isBusy=false; if(alwaysOn) setTimeout(()=>{ if(!isBusy) startListening(); },500); return; }
+    const text  = txYou.textContent.trim();
+    const conf  = recognition._finalConf || 0;
+    const words = text.split(/\s+/).filter(Boolean).length;
+    // Reject: empty, single-word noise, or low confidence
+    if (!text || words < 2 || (conf > 0 && conf < 0.50)) {
+      txYou.textContent = '';
+      isBusy = false;
+      if (alwaysOn) setTimeout(() => { if (!isBusy) startListening(); }, 800);
+      return;
+    }
     await sendToJarvis(text);
   };
 
@@ -525,8 +539,9 @@ async function speakPiper(text) {
   done();
 }
 function done() {
-  setState(''); isBusy=false;
-  if (alwaysOn) setTimeout(()=>{ if(!isBusy&&!isListening) startListening(); },600);
+  setState(''); isBusy = false;
+  // 1.8s gap after speaking — enough for paplay to fully drain and headphones to settle
+  if (alwaysOn) setTimeout(() => { if (!isBusy && !isListening) startListening(); }, 1800);
 }
 
 /* ── Topics UI ── */
