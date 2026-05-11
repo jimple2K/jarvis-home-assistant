@@ -365,7 +365,7 @@
 <script>
 /* ── State ── */
 let alwaysOn = false, isListening = false, isBusy = false;
-let recognition = null, currentAudio = null, micId = "";
+let recognition = null, micId = "";
 
 const stateLabel = document.getElementById('state-label');
 const txYou      = document.getElementById('tx-you');
@@ -393,7 +393,7 @@ function orbClick() {
   startListening();
 }
 function interrupt() {
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  fetch('/tts/stop', {method:'POST'}).catch(()=>{});
   recognition?.abort();
   setState(''); isBusy = false; isListening = false;
 }
@@ -457,29 +457,22 @@ async function sendToJarvis(text) {
   }
 }
 
-/* ── Piper TTS ── */
+/* ── Piper TTS — plays server-side via paplay, Chrome never touches audio ── */
 async function speakPiper(text) {
   if (!text) { done(); return; }
   setState('speaking');
   try {
-    const res = await fetch('/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
-    if (res.status===503) {
+    const res = await fetch('/tts', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text})
+    });
+    if (res.status === 503) {
       const d = await res.json();
-      txJarvis.textContent += `\n[Voice "${d.voice}" not downloaded — open Settings]`;
-      speakFallback(text); return;
+      txJarvis.textContent += ` [Voice "${d.voice}" not downloaded — open Settings]`;
     }
-    if (!res.ok) { done(); return; }
-    const blob = await res.blob();
-    const url  = URL.createObjectURL(blob);
-    currentAudio = new Audio(url);
-    currentAudio.onended = ()=>{ URL.revokeObjectURL(url); currentAudio=null; done(); };
-    currentAudio.onerror = ()=>{ currentAudio=null; done(); };
-    currentAudio.play();
-  } catch { done(); }
-}
-function speakFallback(text) {
-  const u = new SpeechSynthesisUtterance(text);
-  u.onend = u.onerror = ()=>done(); speechSynthesis.speak(u);
+    // 204 = playback finished normally; any status = done either way
+  } catch(e) { /* network error, still continue */ }
+  done();
 }
 function done() {
   setState(''); isBusy=false;

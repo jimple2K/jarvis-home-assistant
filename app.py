@@ -149,9 +149,14 @@ def agent_loop(user_message, history):
     return "Done.", tool_log
 
 
-# ── Piper TTS ─────────────────────────────────────────────────────────────────
+# ── Piper TTS — server-side playback via paplay ───────────────────────────────
+# Audio never touches Chrome. Piper → resample → paplay → PipeWire natively.
+# The browser just waits for the HTTP response to know speech is done.
 
-TARGET_SR = 48000   # match system default — avoids PipeWire resampling music
+TARGET_SR   = 48000
+_tts_lock   = threading.Lock()   # one utterance at a time
+_tts_proc   = None               # current paplay process (for interruption)
+
 
 def _voices_dir():
     d = os.path.expanduser("~/.local/share/piper")
@@ -159,46 +164,39 @@ def _voices_dir():
     return d
 
 
-def _resample_to_stereo_48k(raw_pcm: bytes, src_sr: int) -> bytes:
-    """
-    Resample 16-bit mono PCM from src_sr to 48000Hz stereo using numpy.
-    High-quality linear interpolation — keeps PipeWire in float32 48kHz mode
-    so background audio is never degraded.
-    """
+def _piper_sr(config_path: str) -> int:
+    try:
+        with open(config_path) as f:
+            return json.load(f).get("audio", {}).get("sample_rate", 22050)
+    except Exception:
+        return 22050
+
+
+def _resample_stereo(raw: bytes, src_sr: int) -> bytes:
     import numpy as np
-    samples = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
     if src_sr != TARGET_SR:
-        ratio       = TARGET_SR / src_sr
-        old_len     = len(samples)
-        new_len     = int(old_len * ratio)
-        old_indices = np.linspace(0, old_len - 1, new_len)
-        samples     = np.interp(old_indices, np.arange(old_len), samples)
-    # Mono → stereo (duplicate channel)
+        n_new   = int(len(samples) * TARGET_SR / src_sr)
+        samples = np.interp(
+            np.linspace(0, len(samples) - 1, n_new),
+            np.arange(len(samples)),
+            samples,
+        )
     stereo = np.column_stack([samples, samples])
     return (stereo * 32767).clip(-32768, 32767).astype(np.int16).tobytes()
 
 
-def _make_wav(pcm: bytes, sr: int, channels: int) -> bytes:
-    byte_rate  = sr * channels * 2
-    block_align = channels * 2
-    data_size  = len(pcm)
-    return (
-        b"RIFF" + (36 + data_size).to_bytes(4, "little") +
-        b"WAVE" +
-        b"fmt " + (16).to_bytes(4, "little") +
-        (1).to_bytes(2, "little") +            # PCM
-        channels.to_bytes(2, "little") +
-        sr.to_bytes(4, "little") +
-        byte_rate.to_bytes(4, "little") +
-        block_align.to_bytes(2, "little") +
-        (16).to_bytes(2, "little") +           # bits per sample
-        b"data" + data_size.to_bytes(4, "little") +
-        pcm
-    )
+@app.route("/tts/stop", methods=["POST"])
+def tts_stop():
+    global _tts_proc
+    if _tts_proc and _tts_proc.poll() is None:
+        _tts_proc.terminate()
+    return ("", 204)
 
 
 @app.route("/tts", methods=["POST"])
 def tts():
+    global _tts_proc
     text  = request.json.get("text", "").strip()
     voice = get_config()["piper_voice"]
     if not text:
@@ -212,29 +210,37 @@ def tts():
     if not os.path.exists(model):
         return jsonify({"error": "voice_not_downloaded", "voice": voice}), 503
 
-    try:
-        proc = subprocess.run(
-            ["piper", "--model", model, "--config", config, "--output-raw"],
-            input=text.encode(), capture_output=True, timeout=30,
-        )
-        if proc.returncode != 0 or not proc.stdout:
-            raise RuntimeError(proc.stderr.decode())
+    with _tts_lock:
+        # Stop anything currently playing
+        if _tts_proc and _tts_proc.poll() is None:
+            _tts_proc.terminate()
+            _tts_proc.wait()
 
-        # Piper outputs 22050Hz (medium) or 16000Hz (low) mono 16-bit PCM.
-        # Read actual sample rate from the voice config json.
-        piper_sr = 22050
         try:
-            import json as _json
-            with open(config) as f:
-                piper_sr = _json.load(f).get("audio", {}).get("sample_rate", 22050)
-        except Exception:
-            pass
+            piper = subprocess.run(
+                ["piper", "--model", model, "--config", config, "--output-raw"],
+                input=text.encode(), capture_output=True, timeout=30,
+            )
+            if piper.returncode != 0 or not piper.stdout:
+                raise RuntimeError(piper.stderr.decode())
 
-        pcm_48k_stereo = _resample_to_stereo_48k(proc.stdout, piper_sr)
-        wav = _make_wav(pcm_48k_stereo, TARGET_SR, channels=2)
-        return Response(wav, mimetype="audio/wav")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+            pcm = _resample_stereo(piper.stdout, _piper_sr(config))
+
+            # Play via paplay — raw s16le 48kHz stereo, directly to PipeWire
+            _tts_proc = subprocess.Popen(
+                [
+                    "paplay",
+                    "--raw",
+                    "--format=s16le",
+                    f"--rate={TARGET_SR}",
+                    "--channels=2",
+                ],
+                stdin=subprocess.PIPE,
+            )
+            _tts_proc.communicate(input=pcm)  # blocks until playback done
+            return ("", 204)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
 
 @app.route("/tts/download", methods=["POST"])
