@@ -6,7 +6,6 @@
   <title>Jarvis</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       font-family: 'Segoe UI', sans-serif;
       background: #050a0f;
@@ -18,571 +17,514 @@
       user-select: none;
     }
 
-    /* ── Settings drawer ─────────────────────── */
+    /* ── Settings drawer ── */
     #settings-toggle {
-      position: fixed;
-      top: 14px; right: 16px;
-      background: none;
-      border: 1px solid #30363d;
-      border-radius: 8px;
-      color: #8b949e;
-      padding: 6px 12px;
-      font-size: 12px;
-      cursor: pointer;
-      z-index: 100;
+      position: fixed; top: 14px; right: 16px;
+      background: none; border: 1px solid #30363d; border-radius: 8px;
+      color: #8b949e; padding: 6px 12px; font-size: 12px; cursor: pointer; z-index: 100;
     }
     #settings-toggle:hover { background: #161b22; color: #e6edf3; }
 
     #settings {
-      position: fixed;
-      top: 0; right: 0;
-      width: 340px;
-      height: 100vh;
-      background: #0d1117;
-      border-left: 1px solid #21262d;
-      padding: 60px 20px 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      transform: translateX(100%);
-      transition: transform 0.25s ease;
-      z-index: 99;
-      overflow-y: auto;
+      position: fixed; top: 0; right: 0; width: 360px; height: 100vh;
+      background: #0d1117; border-left: 1px solid #21262d;
+      padding: 60px 20px 20px; display: flex; flex-direction: column;
+      gap: 14px; transform: translateX(100%); transition: transform .25s ease;
+      z-index: 99; overflow-y: auto;
     }
     #settings.open { transform: translateX(0); }
-
-    .setting-group { display: flex; flex-direction: column; gap: 6px; }
-    .setting-group label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
-    .setting-group input, .setting-group select {
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      color: #e6edf3;
-      padding: 8px 10px;
-      font-size: 13px;
-      width: 100%;
+    .sg { display: flex; flex-direction: column; gap: 6px; }
+    .sg label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
+    .sg input, .sg select {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      color: #e6edf3; padding: 8px 10px; font-size: 13px; width: 100%;
     }
-    .setting-group input:focus, .setting-group select:focus { outline: none; border-color: #58a6ff; }
-
-    .s-row { display: flex; gap: 8px; align-items: center; }
-    .s-btn {
-      background: #21262d;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      color: #e6edf3;
-      padding: 8px 14px;
-      font-size: 12px;
-      cursor: pointer;
-      white-space: nowrap;
+    .sg input:focus, .sg select:focus { outline: none; border-color: #58a6ff; }
+    .srow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .sbtn {
+      background: #21262d; border: 1px solid #30363d; border-radius: 6px;
+      color: #e6edf3; padding: 8px 14px; font-size: 12px; cursor: pointer; white-space: nowrap;
     }
-    .s-btn:hover { background: #30363d; }
-    .s-btn.primary { background: #1f6feb; border-color: #1f6feb; }
-    .s-btn.primary:hover { background: #388bfd; }
-    .s-btn.danger { background: #6e2c2c; border-color: #8b3030; }
-    .s-btn.danger:hover { background: #8b3030; }
+    .sbtn:hover { background: #30363d; }
+    .sbtn.primary { background: #1f6feb; border-color: #1f6feb; }
+    .sbtn.primary:hover { background: #388bfd; }
+    .sbtn.danger { background: #6e2c2c; border-color: #8b3030; }
+    .sbtn.danger:hover { background: #8b3030; }
+    #sdot { width:8px;height:8px;border-radius:50%;background:#484f58;flex-shrink:0;transition:background .3s; }
+    #sdot.online { background:#3fb950;box-shadow:0 0 6px #3fb950; }
+    #sdot.offline { background:#f85149; }
+    #mdot { width:8px;height:8px;border-radius:50%;background:#484f58;flex-shrink:0; }
+    #mdot.ok { background:#3fb950;box-shadow:0 0 6px #3fb950; }
+    #save-msg, #dl-msg { font-size:11px;color:#3fb950;min-height:16px; }
+    #settings hr { border:none;border-top:1px solid #21262d; }
+    #settings h3 { font-size:11px;color:#58a6ff;text-transform:uppercase;letter-spacing:1px; }
 
-    #status-dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: #484f58; flex-shrink: 0;
-      transition: background 0.3s;
-    }
-    #status-dot.online  { background: #3fb950; box-shadow: 0 0 6px #3fb950; }
-    #status-dot.offline { background: #f85149; }
-    #save-msg { font-size: 11px; color: #3fb950; min-height: 16px; }
-
-    #settings hr { border: none; border-top: 1px solid #21262d; }
-    #settings h3 { font-size: 11px; color: #58a6ff; text-transform: uppercase; letter-spacing: 1px; }
-
-    /* ── Main stage ──────────────────────────── */
+    /* ── Main orb ── */
     #stage {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 40px;
+      flex:1; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; gap:36px;
     }
-
-    /* Orb */
-    #orb-wrap {
-      position: relative;
-      width: 180px;
-      height: 180px;
-      cursor: pointer;
-    }
+    #orb-wrap { position:relative; width:180px; height:180px; cursor:pointer; }
     #orb {
-      width: 180px;
-      height: 180px;
-      border-radius: 50%;
+      width:180px; height:180px; border-radius:50%;
       background: radial-gradient(circle at 35% 35%, #1a3a5c, #0a1628);
-      box-shadow:
-        0 0 0 0 rgba(88, 166, 255, 0),
-        0 0 40px rgba(31, 111, 235, 0.25),
-        inset 0 0 30px rgba(0,0,0,0.5);
-      transition: box-shadow 0.3s ease, background 0.3s ease;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      box-shadow: 0 0 40px rgba(31,111,235,.25), inset 0 0 30px rgba(0,0,0,.5);
+      transition: box-shadow .3s, background .3s;
+      display:flex; align-items:center; justify-content:center;
     }
-    #orb svg { opacity: 0.7; }
+    #orb svg { opacity:.7; }
 
-    /* Listening */
     body.listening #orb {
       background: radial-gradient(circle at 35% 35%, #0d3320, #051a10);
-      box-shadow:
-        0 0 0 20px rgba(63, 185, 80, 0.08),
-        0 0 60px rgba(63, 185, 80, 0.3),
-        inset 0 0 30px rgba(0,0,0,0.5);
       animation: pulse-listen 1.4s ease-in-out infinite;
     }
     @keyframes pulse-listen {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(63,185,80,0.3), 0 0 60px rgba(63,185,80,0.3), inset 0 0 30px rgba(0,0,0,0.5); }
-      50%       { box-shadow: 0 0 0 28px rgba(63,185,80,0.0), 0 0 80px rgba(63,185,80,0.5), inset 0 0 30px rgba(0,0,0,0.5); }
+      0%,100% { box-shadow: 0 0 0 0 rgba(63,185,80,.3), 0 0 60px rgba(63,185,80,.3), inset 0 0 30px rgba(0,0,0,.5); }
+      50%      { box-shadow: 0 0 0 28px rgba(63,185,80,0), 0 0 80px rgba(63,185,80,.5), inset 0 0 30px rgba(0,0,0,.5); }
     }
-
-    /* Thinking */
     body.thinking #orb {
       background: radial-gradient(circle at 35% 35%, #2a1a4a, #0f0720);
-      box-shadow:
-        0 0 0 0 rgba(139,92,246,0),
-        0 0 60px rgba(139,92,246,0.35),
-        inset 0 0 30px rgba(0,0,0,0.5);
       animation: spin-glow 2s linear infinite;
     }
-    @keyframes spin-glow {
-      0%   { filter: hue-rotate(0deg); }
-      100% { filter: hue-rotate(360deg); }
-    }
-
-    /* Speaking */
+    @keyframes spin-glow { 0%{filter:hue-rotate(0)} 100%{filter:hue-rotate(360deg)} }
     body.speaking #orb {
       background: radial-gradient(circle at 35% 35%, #1f3a1f, #0a1f0a);
-      animation: pulse-speak 0.6s ease-in-out infinite alternate;
+      animation: pulse-speak .6s ease-in-out infinite alternate;
     }
     @keyframes pulse-speak {
-      from { box-shadow: 0 0 20px rgba(88,166,255,0.2), 0 0 60px rgba(88,166,255,0.15), inset 0 0 30px rgba(0,0,0,0.5); }
-      to   { box-shadow: 0 0 40px rgba(88,166,255,0.5), 0 0 100px rgba(88,166,255,0.3), inset 0 0 30px rgba(0,0,0,0.5); }
+      from { box-shadow: 0 0 20px rgba(88,166,255,.2), 0 0 60px rgba(88,166,255,.15), inset 0 0 30px rgba(0,0,0,.5); }
+      to   { box-shadow: 0 0 40px rgba(88,166,255,.5), 0 0 100px rgba(88,166,255,.3), inset 0 0 30px rgba(0,0,0,.5); }
     }
 
-    /* State label */
     #state-label {
-      font-size: 13px;
-      letter-spacing: 3px;
-      text-transform: uppercase;
-      color: #484f58;
-      transition: color 0.3s;
-      min-height: 20px;
+      font-size:13px; letter-spacing:3px; text-transform:uppercase;
+      color:#484f58; transition:color .3s; min-height:20px; text-align:center;
     }
-    body.listening #state-label { color: #3fb950; }
-    body.thinking  #state-label { color: #8b5cf6; }
-    body.speaking  #state-label { color: #58a6ff; }
+    body.listening #state-label { color:#3fb950; }
+    body.thinking  #state-label { color:#8b5cf6; }
+    body.speaking  #state-label { color:#58a6ff; }
 
-    /* Hint */
-    #hint {
-      font-size: 12px;
-      color: #30363d;
-      position: fixed;
-      bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      white-space: nowrap;
+    /* Always-on toggle */
+    #always-on-btn {
+      position:fixed; top:14px; left:16px;
+      background:none; border:1px solid #30363d; border-radius:8px;
+      color:#8b949e; padding:6px 12px; font-size:12px; cursor:pointer; z-index:100;
     }
+    #always-on-btn.active { border-color:#3fb950; color:#3fb950; background:rgba(63,185,80,.1); }
+    #always-on-btn:hover { background:#161b22; }
 
-    /* Transcript strip */
-    #transcript {
-      max-width: 560px;
-      width: 90vw;
-      text-align: center;
-      min-height: 48px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    #transcript-you {
-      font-size: 13px;
-      color: #58a6ff;
-      min-height: 18px;
-      font-style: italic;
-    }
-    #transcript-jarvis {
-      font-size: 15px;
-      color: #c9d1d9;
-      min-height: 22px;
-      line-height: 1.5;
-    }
-
-    /* Tool activity pill */
-    #tool-pill {
-      position: fixed;
-      bottom: 50px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 20px;
-      padding: 4px 14px;
-      font-size: 11px;
-      color: #8b949e;
-      display: none;
-      white-space: nowrap;
-    }
-    #tool-pill.visible { display: block; }
-
-    /* Waveform bars (decorative, shown while speaking) */
-    #wave {
-      display: flex;
-      align-items: center;
-      gap: 3px;
-      height: 30px;
-      opacity: 0;
-      transition: opacity 0.3s;
-    }
-    body.speaking #wave, body.listening #wave { opacity: 1; }
+    /* Waveform */
+    #wave { display:flex;align-items:center;gap:3px;height:30px;opacity:0;transition:opacity .3s; }
+    body.speaking #wave, body.listening #wave { opacity:1; }
     .bar {
-      width: 3px;
-      border-radius: 2px;
-      background: #58a6ff;
-      animation: wave-anim 0.8s ease-in-out infinite;
+      width:3px; border-radius:2px; background:#58a6ff;
+      animation:wave-anim .8s ease-in-out infinite;
     }
-    body.listening .bar { background: #3fb950; }
-    .bar:nth-child(1)  { animation-delay: 0.0s; height: 8px; }
-    .bar:nth-child(2)  { animation-delay: 0.1s; height: 18px; }
-    .bar:nth-child(3)  { animation-delay: 0.2s; height: 12px; }
-    .bar:nth-child(4)  { animation-delay: 0.3s; height: 22px; }
-    .bar:nth-child(5)  { animation-delay: 0.4s; height: 14px; }
-    .bar:nth-child(6)  { animation-delay: 0.5s; height: 24px; }
-    .bar:nth-child(7)  { animation-delay: 0.6s; height: 10px; }
-    .bar:nth-child(8)  { animation-delay: 0.7s; height: 20px; }
-    .bar:nth-child(9)  { animation-delay: 0.8s; height: 8px;  }
-    @keyframes wave-anim {
-      0%, 100% { transform: scaleY(0.4); }
-      50%       { transform: scaleY(1.0); }
+    body.listening .bar { background:#3fb950; }
+    .bar:nth-child(1){animation-delay:.0s;height:8px} .bar:nth-child(2){animation-delay:.1s;height:18px}
+    .bar:nth-child(3){animation-delay:.2s;height:12px} .bar:nth-child(4){animation-delay:.3s;height:22px}
+    .bar:nth-child(5){animation-delay:.4s;height:14px} .bar:nth-child(6){animation-delay:.5s;height:24px}
+    .bar:nth-child(7){animation-delay:.6s;height:10px} .bar:nth-child(8){animation-delay:.7s;height:20px}
+    .bar:nth-child(9){animation-delay:.8s;height:8px}
+    @keyframes wave-anim { 0%,100%{transform:scaleY(.4)} 50%{transform:scaleY(1)} }
+
+    /* Transcript */
+    #transcript {
+      max-width:560px; width:90vw; text-align:center;
+      min-height:60px; display:flex; flex-direction:column; gap:6px;
+    }
+    #tx-you    { font-size:13px; color:#58a6ff; min-height:18px; font-style:italic; }
+    #tx-jarvis { font-size:15px; color:#c9d1d9; min-height:22px; line-height:1.6; }
+
+    /* Tool pill */
+    #tool-pill {
+      position:fixed; bottom:50px; left:50%; transform:translateX(-50%);
+      background:#161b22; border:1px solid #30363d; border-radius:20px;
+      padding:4px 14px; font-size:11px; color:#8b949e; display:none; white-space:nowrap;
+    }
+    #tool-pill.on { display:block; }
+
+    #hint {
+      position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+      font-size:11px; color:#30363d; white-space:nowrap;
+    }
+
+    /* Voice not ready banner */
+    #voice-banner {
+      position:fixed; top:0; left:0; right:0;
+      background:#2d1f00; border-bottom:1px solid #f0883e;
+      color:#f0883e; padding:8px 16px; font-size:12px;
+      text-align:center; display:none; z-index:200;
     }
   </style>
 </head>
 <body>
 
-<!-- Settings toggle -->
+<div id="voice-banner"></div>
+
+<button id="always-on-btn" onclick="toggleAlwaysOn()">⟳ Always On</button>
 <button id="settings-toggle" onclick="toggleSettings()">⚙ Settings</button>
 
 <!-- Settings drawer -->
 <div id="settings">
-  <h3>Connection</h3>
-
-  <div class="setting-group">
-    <label>LM Studio API URL</label>
-    <input id="api-url-input" type="text" value="{{ config.url }}" placeholder="http://100.x.x.x:1234"/>
-  </div>
-
-  <div class="setting-group">
-    <label>Model</label>
-    <input id="model-input" type="text" value="{{ config.model }}" placeholder="local-model"/>
-  </div>
-
-  <div class="setting-group">
-    <label>API Key</label>
-    <input id="api-key-input" type="password" value="{{ config.api_key }}" placeholder="optional"/>
-  </div>
-
-  <div class="s-row">
-    <button class="s-btn primary" onclick="saveConfig()">Save</button>
-    <button class="s-btn" onclick="pingServer()">Test</button>
-    <div id="status-dot"></div>
+  <h3>LM Studio</h3>
+  <div class="sg"><label>API URL</label>
+    <input id="api-url" type="text" value="{{ config.url }}" placeholder="http://100.x.x.x:1234"/></div>
+  <div class="sg"><label>Model</label>
+    <input id="model" type="text" value="{{ config.model }}" placeholder="local-model"/></div>
+  <div class="sg"><label>API Key</label>
+    <input id="api-key" type="password" value="{{ config.api_key }}" placeholder="optional"/></div>
+  <div class="srow">
+    <button class="sbtn primary" onclick="saveConfig()">Save</button>
+    <button class="sbtn" onclick="pingServer()">Test</button>
+    <div id="sdot"></div>
     <span id="save-msg"></span>
   </div>
 
   <hr/>
-  <h3>Voice</h3>
-
-  <div class="setting-group">
-    <label>Microphone</label>
-    <select id="mic-select"><option value="">Default microphone</option></select>
-  </div>
-
-  <div class="setting-group">
-    <label>TTS Voice</label>
-    <select id="voice-select"><option value="">Default voice</option></select>
-  </div>
-
-  <div class="setting-group">
-    <label>TTS Speed</label>
-    <input id="tts-rate" type="range" min="0.5" max="2" step="0.05" value="1" style="padding:0"/>
-    <span id="tts-rate-val" style="font-size:11px;color:#8b949e">1.0×</span>
-  </div>
-
-  <div class="setting-group">
-    <label>TTS Pitch</label>
-    <input id="tts-pitch" type="range" min="0.5" max="2" step="0.05" value="1" style="padding:0"/>
-    <span id="tts-pitch-val" style="font-size:11px;color:#8b949e">1.0</span>
+  <h3>Supabase Memory</h3>
+  <div class="sg"><label>Project URL</label>
+    <input id="sb-url" type="text" value="{{ config.supabase_url }}" placeholder="https://xxxx.supabase.co"/></div>
+  <div class="sg"><label>Anon Key</label>
+    <input id="sb-key" type="password" value="{{ config.supabase_key }}" placeholder="eyJ..."/></div>
+  <div class="srow">
+    <button class="sbtn primary" onclick="saveSupabase()">Connect</button>
+    <div id="mdot"></div>
+    <span id="mem-msg"></span>
   </div>
 
   <hr/>
-  <button class="s-btn danger" onclick="resetConversation()">Clear Conversation</button>
+  <h3>Voice (Piper TTS)</h3>
+  <div class="sg"><label>Voice</label>
+    <select id="piper-voice">
+      <option value="en_US-amy-medium">en_US-amy-medium (default)</option>
+      <option value="en_US-lessac-medium">en_US-lessac-medium</option>
+      <option value="en_US-ryan-high">en_US-ryan-high</option>
+      <option value="en_GB-alan-medium">en_GB-alan-medium</option>
+      <option value="en_GB-jenny-diphone">en_GB-jenny-diphone</option>
+    </select>
+  </div>
+  <div class="srow">
+    <button class="sbtn" onclick="downloadVoice()">Download Voice</button>
+    <span id="dl-msg"></span>
+  </div>
+
+  <hr/>
+  <h3>Microphone</h3>
+  <div class="sg"><label>Input Device</label>
+    <select id="mic-select"><option value="">Default</option></select></div>
+
+  <hr/>
+  <button class="sbtn danger" onclick="resetConversation()">Clear Conversation</button>
 </div>
 
-<!-- Main -->
+<!-- Stage -->
 <div id="stage">
-  <!-- Orb -->
-  <div id="orb-wrap" onclick="toggleListen()" title="Click or press Space to talk">
+  <div id="orb-wrap" onclick="orbClick()" title="Click or Space to talk / interrupt">
     <div id="orb">
-      <!-- J logo -->
-      <svg width="60" height="60" viewBox="0 0 60 60" fill="none">
+      <svg width="60" height="60" viewBox="0 0 60 60">
         <text x="50%" y="55%" dominant-baseline="middle" text-anchor="middle"
               font-family="Segoe UI,sans-serif" font-size="38" font-weight="700" fill="#58a6ff">J</text>
       </svg>
     </div>
   </div>
 
-  <!-- Waveform -->
   <div id="wave">
     <div class="bar"></div><div class="bar"></div><div class="bar"></div>
     <div class="bar"></div><div class="bar"></div><div class="bar"></div>
     <div class="bar"></div><div class="bar"></div><div class="bar"></div>
   </div>
 
-  <!-- Status label -->
   <div id="state-label">Ready</div>
 
-  <!-- Transcript -->
   <div id="transcript">
-    <div id="transcript-you"></div>
-    <div id="transcript-jarvis"></div>
+    <div id="tx-you"></div>
+    <div id="tx-jarvis"></div>
   </div>
 </div>
 
-<!-- Tool activity -->
 <div id="tool-pill"></div>
-
-<!-- Hint -->
-<div id="hint">Click the orb or press Space to speak</div>
+<div id="hint">Click orb or Space to speak · ESC to stop</div>
 
 <script>
-  /* ── State ─────────────────────────────────────────── */
-  let recognition   = null;
-  let isListening   = false;
-  let isBusy        = false;
-  let selectedMicId = "";
-  let voices        = [];
+/* ── State ── */
+let alwaysOn    = false;
+let isListening = false;
+let isBusy      = false;
+let recognition = null;
+let currentAudio= null;
+let micId       = "";
 
-  const body         = document.body;
-  const stateLabel   = document.getElementById('state-label');
-  const txYou        = document.getElementById('transcript-you');
-  const txJarvis     = document.getElementById('transcript-jarvis');
-  const toolPill     = document.getElementById('tool-pill');
+const body      = document.body;
+const stateLabel= document.getElementById('state-label');
+const txYou     = document.getElementById('tx-you');
+const txJarvis  = document.getElementById('tx-jarvis');
+const toolPill  = document.getElementById('tool-pill');
+const aoBtn     = document.getElementById('always-on-btn');
 
-  /* ── State helpers ─────────────────────────────────── */
-  function setState(s) {
-    body.className = s;
-    stateLabel.textContent = { '': 'Ready', listening: 'Listening…', thinking: 'Thinking…', speaking: 'Speaking…' }[s] ?? s;
-  }
+/* ── Helpers ── */
+function setState(s) {
+  body.className = s || '';
+  stateLabel.textContent = {
+    '':'Ready', listening:'Listening…', thinking:'Thinking…', speaking:'Speaking…'
+  }[s] ?? s;
+}
 
-  function showTool(name) {
-    toolPill.textContent = `⚙ ${name}`;
-    toolPill.classList.add('visible');
-  }
-  function hideTool() { toolPill.classList.remove('visible'); }
+function showTool(name) { toolPill.textContent = `⚙ ${name}`; toolPill.classList.add('on'); }
+function hideTool()     { toolPill.classList.remove('on'); }
 
-  /* ── Settings ──────────────────────────────────────── */
-  function toggleSettings() {
-    document.getElementById('settings').classList.toggle('open');
-  }
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  async function saveConfig() {
-    const url     = document.getElementById('api-url-input').value.trim();
-    const model   = document.getElementById('model-input').value.trim();
-    const api_key = document.getElementById('api-key-input').value.trim();
-    await fetch('/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, model, api_key}) });
-    const m = document.getElementById('save-msg');
-    m.textContent = 'Saved!';
-    setTimeout(() => m.textContent = '', 2000);
-  }
+/* ── Always-on toggle ── */
+function toggleAlwaysOn() {
+  alwaysOn = !alwaysOn;
+  aoBtn.classList.toggle('active', alwaysOn);
+  aoBtn.textContent = alwaysOn ? '⟳ Always On ✓' : '⟳ Always On';
+  if (alwaysOn && !isBusy && !isListening) startListening();
+}
 
-  async function pingServer() {
-    const dot = document.getElementById('status-dot');
-    dot.className = '';
-    try {
-      await saveConfig();
-      const res  = await fetch('/ping', { method:'POST' });
-      const data = await res.json();
-      dot.className = data.status === 'online' ? 'online' : 'offline';
-      if (data.models?.length) document.getElementById('model-input').placeholder = data.models[0];
-    } catch { dot.className = 'offline'; }
-  }
+/* ── Interrupt ── */
+function interrupt() {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  if (recognition)  { recognition.abort(); }
+  setState('');
+  isBusy = false;
+  isListening = false;
+}
 
-  async function resetConversation() {
-    await fetch('/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({reset: true}) });
-    txYou.textContent    = '';
-    txJarvis.textContent = '';
-    speak("Conversation cleared.");
-  }
+/* ── Orb click ── */
+function orbClick() {
+  if (isBusy || isListening) { interrupt(); return; }
+  startListening();
+}
 
-  /* ── Microphone enumeration ────────────────────────── */
-  async function loadMics() {
-    try {
-      await navigator.mediaDevices.getUserMedia({ audio: true }); // trigger permission
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const sel = document.getElementById('mic-select');
-      sel.innerHTML = '<option value="">Default microphone</option>';
-      devices.filter(d => d.kind === 'audioinput').forEach(d => {
-        const opt = document.createElement('option');
-        opt.value = d.deviceId;
-        opt.textContent = d.label || `Microphone ${d.deviceId.slice(0,8)}`;
-        sel.appendChild(opt);
-      });
-      sel.onchange = () => { selectedMicId = sel.value; };
-    } catch(e) {
-      console.warn('Mic enumeration failed:', e);
+/* ── Speech recognition ── */
+function startListening() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { alert('Speech recognition requires Chrome or Chromium.'); return; }
+
+  isBusy = true;
+  isListening = true;
+  recognition = new SR();
+  recognition.continuous     = false;
+  recognition.interimResults = true;
+  recognition.lang           = 'en-US';
+
+  recognition.onstart  = () => setState('listening');
+  recognition.onresult = (e) => {
+    let interim='', final='';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) final   += e.results[i][0].transcript;
+      else                      interim += e.results[i][0].transcript;
     }
-  }
+    txYou.textContent = (final || interim).trim();
+  };
+  recognition.onerror = (e) => {
+    console.warn('STT error:', e.error);
+    isListening = false;
+    if (e.error === 'no-speech' && alwaysOn) { isBusy = false; setTimeout(startListening, 600); return; }
+    setState(''); isBusy = false;
+    if (alwaysOn) setTimeout(() => { if (!isBusy) startListening(); }, 1500);
+  };
+  recognition.onend = async () => {
+    isListening = false;
+    const text = txYou.textContent.trim();
+    if (!text) {
+      isBusy = false;
+      if (alwaysOn) setTimeout(() => { if (!isBusy) startListening(); }, 500);
+      return;
+    }
+    await sendToJarvis(text);
+  };
 
-  /* ── TTS voices ─────────────────────────────────────── */
-  function loadVoices() {
-    voices = speechSynthesis.getVoices();
-    const sel = document.getElementById('voice-select');
-    sel.innerHTML = '<option value="">Default voice</option>';
-    voices.forEach((v, i) => {
-      const opt = document.createElement('option');
-      opt.value = i;
-      opt.textContent = `${v.name} (${v.lang})`;
-      sel.appendChild(opt);
+  if (micId) {
+    navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: micId } } })
+      .then(() => recognition.start()).catch(() => recognition.start());
+  } else {
+    recognition.start();
+  }
+}
+
+/* ── Send to Jarvis ── */
+async function sendToJarvis(text) {
+  setState('thinking');
+  txJarvis.textContent = '';
+
+  try {
+    const res  = await fetch('/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ message: text })
     });
+    const data = await res.json();
+
+    // Flash tools used
+    if (data.tools?.length) {
+      for (const t of data.tools) { showTool(t.tool); await delay(350); }
+      hideTool();
+    }
+
+    const reply = data.error ? `Error: ${data.error}` : (data.reply || '');
+    txJarvis.textContent = reply;
+    await speakPiper(reply);
+  } catch(e) {
+    setState(''); isBusy = false;
+    txJarvis.textContent = 'Connection error.';
+    if (alwaysOn) setTimeout(() => { if (!isBusy) startListening(); }, 1500);
   }
-  speechSynthesis.onvoiceschanged = loadVoices;
-  loadVoices();
+}
 
-  document.getElementById('tts-rate').addEventListener('input', e => {
-    document.getElementById('tts-rate-val').textContent = parseFloat(e.target.value).toFixed(2) + '×';
-  });
-  document.getElementById('tts-pitch').addEventListener('input', e => {
-    document.getElementById('tts-pitch-val').textContent = parseFloat(e.target.value).toFixed(2);
-  });
-
-  /* ── TTS ────────────────────────────────────────────── */
-  function speak(text) {
-    if (!text) return;
-    speechSynthesis.cancel();
-    setState('speaking');
-    const utt = new SpeechSynthesisUtterance(text);
-    utt.rate  = parseFloat(document.getElementById('tts-rate').value);
-    utt.pitch = parseFloat(document.getElementById('tts-pitch').value);
-    const vi  = document.getElementById('voice-select').value;
-    if (vi !== '' && voices[parseInt(vi)]) utt.voice = voices[parseInt(vi)];
-    utt.onend = () => { setState(''); isBusy = false; };
-    utt.onerror = () => { setState(''); isBusy = false; };
-    speechSynthesis.speak(utt);
-  }
-
-  /* ── Speech recognition ─────────────────────────────── */
-  function buildRecognition() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { alert('Speech recognition not supported. Use Chromium or Chrome.'); return null; }
-    const r = new SR();
-    r.continuous      = false;
-    r.interimResults  = true;
-    r.lang            = 'en-US';
-
-    r.onstart = () => { setState('listening'); };
-
-    r.onresult = (e) => {
-      let interim = '', final = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) final   += e.results[i][0].transcript;
-        else                      interim += e.results[i][0].transcript;
-      }
-      txYou.textContent = (final || interim).trim();
-    };
-
-    r.onerror = (e) => {
-      console.error('STT error', e.error);
-      setState('');
-      isListening = false;
-      isBusy = false;
-    };
-
-    r.onend = async () => {
-      isListening = false;
-      const text = txYou.textContent.trim();
-      if (!text) { setState(''); isBusy = false; return; }
-      await sendToJarvis(text);
-    };
-
-    return r;
-  }
-
-  function toggleListen() {
-    if (isBusy) {
-      speechSynthesis.cancel();
-      setState('');
-      isBusy = false;
+/* ── Piper TTS ── */
+async function speakPiper(text) {
+  if (!text) { done(); return; }
+  setState('speaking');
+  try {
+    const res = await fetch('/tts', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ text })
+    });
+    if (res.status === 503) {
+      // Voice not downloaded — show banner, fall back to Web Speech
+      const d = await res.json();
+      showVoiceBanner(d.voice);
+      speakWebSpeech(text);
       return;
     }
-    if (isListening) {
-      recognition?.stop();
-      return;
-    }
-    isBusy = true;
-    isListening = true;
-    recognition = buildRecognition();
-    if (!recognition) { isBusy = false; isListening = false; return; }
-
-    // If a specific mic is chosen, start that stream first
-    if (selectedMicId) {
-      navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: selectedMicId } } })
-        .then(() => recognition.start())
-        .catch(() => recognition.start());
-    } else {
-      recognition.start();
-    }
+    if (!res.ok) { done(); return; }
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    currentAudio = new Audio(url);
+    currentAudio.onended = () => { URL.revokeObjectURL(url); currentAudio = null; done(); };
+    currentAudio.onerror = () => { currentAudio = null; done(); };
+    currentAudio.play();
+  } catch(e) {
+    done();
   }
+}
 
-  /* ── Send to Jarvis ─────────────────────────────────── */
-  async function sendToJarvis(text) {
-    setState('thinking');
-    txJarvis.textContent = '';
+function done() {
+  setState('');
+  isBusy = false;
+  if (alwaysOn) setTimeout(() => { if (!isBusy && !isListening) startListening(); }, 600);
+}
 
-    try {
-      const res  = await fetch('/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text })
-      });
-      const data = await res.json();
+/* ── Web Speech fallback ── */
+function speakWebSpeech(text) {
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.onend = utt.onerror = () => done();
+  speechSynthesis.speak(utt);
+}
 
-      if (data.tools?.length) {
-        for (const t of data.tools) { showTool(t.tool); await delay(400); }
-        hideTool();
-      }
+/* ── Voice not downloaded banner ── */
+function showVoiceBanner(voice) {
+  const b = document.getElementById('voice-banner');
+  b.innerHTML = `Piper voice <b>${voice}</b> not downloaded. Open ⚙ Settings and click "Download Voice". Using browser TTS for now.`;
+  b.style.display = 'block';
+  setTimeout(() => b.style.display = 'none', 8000);
+}
 
-      const reply = data.error ? `Error: ${data.error}` : data.reply;
-      txJarvis.textContent = reply;
-      speak(reply);
-    } catch(e) {
-      setState('');
-      isBusy = false;
-      txJarvis.textContent = 'Connection error.';
-    }
-  }
+/* ── Keyboard ── */
+document.addEventListener('keydown', e => {
+  if (e.target !== document.body) return;
+  if (e.code === 'Space') { e.preventDefault(); orbClick(); }
+  if (e.key  === 'Escape') { interrupt(); document.getElementById('settings').classList.remove('open'); }
+});
 
-  function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+/* ── Settings ── */
+function toggleSettings() { document.getElementById('settings').classList.toggle('open'); }
 
-  /* ── Keyboard shortcut ──────────────────────────────── */
-  document.addEventListener('keydown', e => {
-    if (e.code === 'Space' && e.target === document.body) {
-      e.preventDefault();
-      toggleListen();
-    }
-    if (e.key === 'Escape') {
-      document.getElementById('settings').classList.remove('open');
-      speechSynthesis.cancel();
-      recognition?.stop();
-      setState('');
-      isBusy = false;
-    }
+async function saveConfig() {
+  await fetch('/config', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      url:     document.getElementById('api-url').value.trim(),
+      model:   document.getElementById('model').value.trim(),
+      api_key: document.getElementById('api-key').value.trim(),
+      piper_voice: document.getElementById('piper-voice').value,
+    })
   });
+  flash('save-msg', 'Saved!');
+}
 
-  /* ── Init ───────────────────────────────────────────── */
-  loadMics();
-  pingServer();
+async function pingServer() {
+  const dot = document.getElementById('sdot');
+  dot.className = '';
+  await saveConfig();
+  try {
+    const res  = await fetch('/ping', { method:'POST' });
+    const data = await res.json();
+    dot.className = data.status === 'online' ? 'online' : 'offline';
+    if (data.models?.length) document.getElementById('model').placeholder = data.models[0];
+  } catch { dot.className = 'offline'; }
+}
+
+async function saveSupabase() {
+  const url = document.getElementById('sb-url').value.trim();
+  const key = document.getElementById('sb-key').value.trim();
+  await fetch('/config', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ supabase_url: url, supabase_key: key })
+  });
+  const res  = await fetch('/memory/status');
+  const data = await res.json();
+  document.getElementById('mdot').className = data.connected ? 'ok' : '';
+  document.getElementById('mem-msg').textContent = data.connected ? 'Connected!' : 'Not connected';
+  setTimeout(() => document.getElementById('mem-msg').textContent = '', 3000);
+}
+
+async function downloadVoice() {
+  const voice = document.getElementById('piper-voice').value;
+  const msg   = document.getElementById('dl-msg');
+  msg.textContent = 'Downloading…';
+  const res = await fetch('/tts/download', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({ voice }) });
+  const reader = res.body.getReader();
+  const dec    = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const line = dec.decode(value).replace(/^data: /, '').trim();
+    if (line) msg.textContent = line.slice(0, 60);
+  }
+  msg.textContent = 'Done!';
+  setTimeout(() => msg.textContent = '', 3000);
+}
+
+async function resetConversation() {
+  await fetch('/chat', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ reset: true }) });
+  txYou.textContent = ''; txJarvis.textContent = '';
+  speakPiper("Conversation cleared.");
+}
+
+function flash(id, msg, ms=2000) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  setTimeout(() => el.textContent = '', ms);
+}
+
+/* ── Mic enumeration ── */
+async function loadMics() {
+  try {
+    await navigator.mediaDevices.getUserMedia({ audio: true });
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const sel  = document.getElementById('mic-select');
+    sel.innerHTML = '<option value="">Default</option>';
+    devs.filter(d => d.kind === 'audioinput').forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || `Mic ${d.deviceId.slice(0,8)}`;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => micId = sel.value;
+  } catch(e) { console.warn('Mic enum failed:', e); }
+}
+
+/* ── Init ── */
+loadMics();
+pingServer();
+fetch('/memory/status').then(r=>r.json()).then(d=>{
+  document.getElementById('mdot').className = d.connected ? 'ok' : '';
+});
+// Set current piper voice in selector
+document.getElementById('piper-voice').value = "{{ config.piper_voice }}";
 </script>
 </body>
 </html>

@@ -10,6 +10,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import browser as _browser
+import memory as _mem
 
 
 def _run(cmd, timeout=30, cwd=None):
@@ -349,6 +350,28 @@ def browser_screenshot(tab_id: int, path: str = "") -> str:
     return _browser.screenshot_tab(tab_id, path)
 
 
+# ── Memory ────────────────────────────────────────────────────────────────────
+
+def remember(content: str, type: str = "fact", importance: int = 1) -> str:
+    """Store something in long-term memory (Supabase)."""
+    return _mem.store_memory(content, type=type, importance=importance)
+
+
+def recall(query: str) -> str:
+    """Search long-term memory for anything relevant to the query."""
+    return _mem.search_memories(query) or "Nothing relevant found in memory."
+
+
+def list_memories() -> str:
+    """List all stored memories."""
+    return _mem.list_all_memories()
+
+
+def forget(memory_id: int) -> str:
+    """Delete a specific memory by ID."""
+    return _mem.delete_memory(memory_id)
+
+
 # ── Cron / scheduled tasks ────────────────────────────────────────────────────
 
 def cron_list() -> str:
@@ -397,6 +420,10 @@ TOOL_FUNCTIONS = {
     "browser_get_content":browser_get_content,
     "browser_navigate":   browser_navigate,
     "browser_screenshot": browser_screenshot,
+    "remember":           remember,
+    "recall":             recall,
+    "list_memories":      list_memories,
+    "forget":             forget,
 }
 
 TOOL_SCHEMAS = [
@@ -760,6 +787,58 @@ TOOL_SCHEMAS = [
                     "path": {"type": "string", "description": "Where to save the PNG (optional)"}
                 },
                 "required": ["tab_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": "Save something to Jarvis's long-term memory in Supabase so it persists across restarts. Use for user preferences, facts about the user, important events, or anything worth remembering.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "What to remember"},
+                    "type":    {"type": "string", "enum": ["fact", "preference", "event", "task"], "description": "Category of memory"},
+                    "importance": {"type": "integer", "description": "1=low, 2=medium, 3=high importance"}
+                },
+                "required": ["content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall",
+            "description": "Search long-term memory for facts, preferences, or events relevant to the current conversation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to search for in memory"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_memories",
+            "description": "List all stored long-term memories.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forget",
+            "description": "Delete a specific memory by its ID number.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "integer"}
+                },
+                "required": ["memory_id"]
             }
         }
     },
