@@ -164,11 +164,15 @@ def pin_topic(topic_id: int, pinned: bool) -> str:
 
 # ── Concepts ──────────────────────────────────────────────────────────────────
 
-def add_concept(text: str, category: str = "info", ttl_minutes: int = 60) -> str:
+def add_concept(text: str, category: str = "info", ttl_minutes: int = 60, key: str = "") -> str:
     expires = (datetime.utcnow() + timedelta(minutes=ttl_minutes)).strftime("%Y-%m-%d %H:%M:%S")
     with _lock, _conn() as c:
-        # Avoid duplicate concepts
-        c.execute("DELETE FROM concepts WHERE text=?", (text,))
+        if key:
+            # Replace any existing concept for this key+category regardless of changing values
+            c.execute("DELETE FROM concepts WHERE text LIKE ? AND category=?",
+                      (f"%{key}%", category))
+        else:
+            c.execute("DELETE FROM concepts WHERE text=?", (text,))
         c.execute(
             "INSERT INTO concepts (text, category, expires_at) VALUES (?,?,?)",
             (text, category, expires)

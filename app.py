@@ -1,15 +1,20 @@
 import os
 import re
+import sys
 import json
+import time
+import shutil
 import subprocess
 import requests
 import threading
 import webbrowser
-from flask import Flask, request, jsonify, render_template, Response
+from collections import deque
+from flask import Flask, request, jsonify, render_template, Response, send_from_directory
 from dotenv import load_dotenv, set_key
 from tools import TOOL_SCHEMAS, TOOL_FUNCTIONS
 import db
 import ssh_metrics as ssh
+import spotify as _spotify
 
 load_dotenv()
 db.init()
@@ -17,6 +22,42 @@ ssh.start_all_monitors()
 
 app = Flask(__name__)
 conversation_history = []
+
+# ── Activity feed (rolling task list shown in the UI) ─────────────────────────
+_activity_lock    = threading.Lock()
+_activity_log     = deque(maxlen=40)           # recent events, newest last
+_activity_seq     = 0
+_activity_current = None                       # {"kind", "label", "started"} or None
+
+
+def _activity_push(kind: str, label: str, extra: dict | None = None) -> None:
+    """Append an event to the rolling activity log. Thread-safe."""
+    global _activity_seq
+    with _activity_lock:
+        _activity_seq += 1
+        evt = {"id": _activity_seq, "ts": time.time(), "kind": kind, "label": label}
+        if extra:
+            evt.update(extra)
+        _activity_log.append(evt)
+
+
+def _activity_set_current(kind: str | None, label: str = "") -> None:
+    """Mark Jarvis' current top-level task (or clear it with kind=None)."""
+    global _activity_current
+    with _activity_lock:
+        if kind is None:
+            _activity_current = None
+        else:
+            _activity_current = {"kind": kind, "label": label, "started": time.time()}
+
+
+def _activity_snapshot() -> dict:
+    with _activity_lock:
+        return {
+            "current": dict(_activity_current) if _activity_current else None,
+            "events":  list(_activity_log),
+            "now":     time.time(),
+        }
 
 
 def get_config():
@@ -34,7 +75,7 @@ def get_config():
 
 def build_system_prompt():
     base = """You are Jarvis, a voice-operated home assistant on this Linux machine.
-You have full tool access: shell, filesystem, processes, browser, web search, memory, topics, and concepts.
+You have full tool access: shell, filesystem, processes, browser, web search, memory, topics, concepts, and Spotify control.
 
 Rules — your replies are spoken aloud via TTS:
 - 1-3 short sentences max. No markdown, asterisks, or bullet points.
@@ -124,8 +165,12 @@ def agent_loop(user_message, history):
     ]
     tool_log = []
 
-    for _ in range(12):
-        msg        = call_lm(messages, cfg)
+    for turn in range(12):
+        _activity_set_current("thinking", f"LM call · turn {turn + 1}")
+        t0  = time.time()
+        msg = call_lm(messages, cfg)
+        _activity_push("llm", f"turn {turn + 1} · {time.time() - t0:.1f}s")
+
         content    = msg.get("content") or ""
         tool_calls = msg.get("tool_calls") or []
 
@@ -142,7 +187,10 @@ def agent_loop(user_message, history):
             name   = tc["function"]["name"]
             raw    = tc["function"].get("arguments", "{}")
             args   = json.loads(raw) if isinstance(raw, str) else raw
+            _activity_set_current("tool", f"{name}")
+            tt = time.time()
             result = run_tool(name, args)
+            _activity_push("tool", f"{name} · {time.time() - tt:.1f}s")
             tool_log.append({"tool": name, "result": result[:300]})
             messages.append({
                 "role":         "tool",
@@ -158,6 +206,19 @@ def agent_loop(user_message, history):
 TARGET_SR = 48000
 _tts_lock = threading.Lock()
 _tts_proc = None
+
+
+def _piper_bin() -> str:
+    """Find the piper executable. Prefer the one sitting next to the running
+    Python interpreter (works whether the venv is activated or not), then fall
+    back to whatever's on PATH."""
+    candidate = os.path.join(os.path.dirname(sys.executable), "piper")
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    found = shutil.which("piper")
+    if found:
+        return found
+    return "piper"
 
 
 def _voices_dir():
@@ -267,7 +328,7 @@ def _tts_speak(text: str):
         with _tts_lock:
             try:
                 piper = subprocess.run(
-                    ["piper", "--model", model, "--config", config, "--output-raw"],
+                    [_piper_bin(), "--model", model, "--config", config, "--output-raw"],
                     input=text.encode(), capture_output=True, timeout=30,
                 )
                 if piper.returncode != 0 or not piper.stdout:
@@ -345,7 +406,13 @@ def tts():
     config = os.path.join(vdir, f"{voice}.onnx.json")
 
     if not os.path.exists(model):
+        _activity_push("error", f"tts: voice {voice} not downloaded")
         return jsonify({"error": "voice_not_downloaded", "voice": voice}), 503
+
+    snippet = (text[:60] + "…") if len(text) > 60 else text
+    _activity_set_current("speaking", snippet)
+    _activity_push("speak", snippet)
+    t_start = time.time()
 
     with _tts_lock:
         if _tts_proc and _tts_proc.poll() is None:
@@ -353,7 +420,7 @@ def tts():
             _tts_proc.wait()
         try:
             piper = subprocess.run(
-                ["piper", "--model", model, "--config", config, "--output-raw"],
+                [_piper_bin(), "--model", model, "--config", config, "--output-raw"],
                 input=text.encode(), capture_output=True, timeout=30,
             )
             if piper.returncode != 0 or not piper.stdout:
@@ -369,8 +436,12 @@ def tts():
 
             sink = cfg.get("tts_sink", "").strip()
             _paplay(pcm, sink)
+            _activity_push("speak-done", f"{time.time() - t_start:.1f}s")
+            _activity_set_current(None)
             return ("", 204)
         except Exception as e:
+            _activity_push("error", f"tts: {e}")
+            _activity_set_current(None)
             return jsonify({"error": str(e)}), 500
 
 
@@ -400,6 +471,31 @@ def download_voice():
         yield "data: DONE\n\n"
 
     return Response(stream(), mimetype="text/event-stream")
+
+
+# ── Spotify ───────────────────────────────────────────────────────────────────
+
+@app.route("/api/spotify/current")
+def spotify_current():
+    return jsonify(_spotify.now_playing())
+
+
+@app.route("/api/spotify/play-pause", methods=["POST"])
+def spotify_play_pause():
+    msg = _spotify.play_pause()
+    return jsonify({"status": msg, "now": _spotify.now_playing()})
+
+
+@app.route("/api/spotify/next", methods=["POST"])
+def spotify_next():
+    msg = _spotify.next_track()
+    return jsonify({"status": msg, "now": _spotify.now_playing()})
+
+
+@app.route("/api/spotify/previous", methods=["POST"])
+def spotify_previous():
+    msg = _spotify.previous_track()
+    return jsonify({"status": msg, "now": _spotify.now_playing()})
 
 
 # ── Tailscale + SSH metrics ────────────────────────────────────────────────────
@@ -586,6 +682,17 @@ def pin_topic(tid):
 
 # ── Chat ───────────────────────────────────────────────────────────────────────
 
+_CODE_RE = re.compile(r'```(\w*)\n?(.*?)```', re.DOTALL)
+
+def _extract_code_blocks(text: str) -> list:
+    blocks = []
+    for m in _CODE_RE.finditer(text):
+        code = m.group(2).strip()
+        if code:
+            blocks.append({"lang": m.group(1) or "text", "code": code})
+    return blocks
+
+
 @app.route("/chat", methods=["POST"])
 def chat():
     global conversation_history
@@ -593,29 +700,63 @@ def chat():
 
     if data.get("reset"):
         conversation_history = []
-        return jsonify({"reply": "Conversation cleared.", "tools": []})
+        _activity_push("reset", "conversation cleared")
+        return jsonify({"reply": "Conversation cleared.", "tools": [], "code_blocks": []})
 
     user_message = data.get("message", "").strip()
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
 
+    snippet = (user_message[:60] + "…") if len(user_message) > 60 else user_message
+    _activity_push("user", snippet)
+    _activity_set_current("thinking", snippet)
+
+    t_start = time.time()
     try:
         reply, tool_log = agent_loop(user_message, conversation_history)
+        code_blocks = _extract_code_blocks(reply)
         conversation_history.append({"role": "user",      "content": user_message})
         conversation_history.append({"role": "assistant", "content": reply})
         if len(conversation_history) > 40:
             conversation_history = conversation_history[-40:]
         db.log_conversation(user_message, reply, [t["tool"] for t in tool_log])
-        return jsonify({"reply": reply, "tools": tool_log})
+
+        reply_snippet = (reply[:80] + "…") if len(reply) > 80 else reply
+        _activity_push("reply", f"{reply_snippet}  ({time.time() - t_start:.1f}s)")
+        _activity_set_current(None)
+        return jsonify({"reply": reply, "tools": tool_log, "code_blocks": code_blocks})
     except Exception as e:
+        _activity_push("error", f"chat: {e}")
+        _activity_set_current(None)
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/activity")
+def api_activity():
+    return jsonify(_activity_snapshot())
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
+FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+
+
+@app.route("/api/config")
+def api_config():
+    return jsonify(get_config())
+
+
 @app.route("/")
 def index():
+    dist_index = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.exists(dist_index):
+        return send_from_directory(FRONTEND_DIST, "index.html")
     return render_template("index.html", config=get_config())
+
+
+@app.route("/assets/<path:filename>")
+def assets(filename):
+    return send_from_directory(os.path.join(FRONTEND_DIST, "assets"), filename)
 
 
 @app.route("/config", methods=["POST"])

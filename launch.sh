@@ -9,6 +9,23 @@ if [ -n "$OLD" ]; then
   sleep 0.6
 fi
 
+# Build the React frontend if the dist directory doesn't exist yet
+FRONTEND_DIST="$DIR/frontend/dist"
+if [ ! -d "$FRONTEND_DIST" ]; then
+  echo "Frontend dist not found — building React frontend..."
+  cd "$DIR/frontend"
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "ERROR: npm not found. Install Node.js to build the frontend."
+    exit 1
+  fi
+  npm install && npm run build
+  if [ $? -ne 0 ]; then
+    echo "ERROR: Frontend build failed."
+    exit 1
+  fi
+  cd "$DIR"
+fi
+
 # Start Jarvis server in background
 "$DIR/.venv/bin/python" "$DIR/app.py" &
 APP_PID=$!

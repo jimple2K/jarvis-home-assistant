@@ -12,6 +12,7 @@ import urllib.error
 import browser as _browser
 import db
 import ssh_metrics as _ssh
+import spotify as _spotify
 
 
 def _run(cmd, timeout=30, cwd=None):
@@ -480,6 +481,48 @@ def cron_add(schedule: str, command: str) -> str:
     return f"Added cron: {new_line}"
 
 
+# ── Spotify ───────────────────────────────────────────────────────────────────
+
+def spotify_now_playing() -> str:
+    info = _spotify.now_playing()
+    if not info.get("running"):
+        return "Spotify is not running."
+    if not info.get("title"):
+        return f"Spotify is {info.get('status', 'idle')} — no track info available."
+    status = info.get("status", "")
+    return f"{info['title']} by {info['artist']} [{status}]"
+
+
+def spotify_play_pause() -> str:
+    return _spotify.play_pause()
+
+
+def spotify_next() -> str:
+    return _spotify.next_track()
+
+
+def spotify_previous() -> str:
+    return _spotify.previous_track()
+
+
+def spotify_stop() -> str:
+    return _spotify.stop()
+
+
+def spotify_volume(percent: int) -> str:
+    return _spotify.set_volume(percent)
+
+
+def spotify_search(query: str) -> str:
+    """Open Spotify with a search so the user can browse results."""
+    return _spotify.open_search(query)
+
+
+def spotify_play(query: str, kind: str = "track") -> str:
+    """Search Spotify and immediately play the best result (requires Web API credentials)."""
+    return _spotify.search_and_play(query, kind=kind)
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_FUNCTIONS = {
@@ -527,6 +570,14 @@ TOOL_FUNCTIONS = {
     "ssh_get_metrics":    ssh_get_metrics,
     "ssh_get_all_metrics":ssh_get_all_metrics,
     "ssh_run_command":    ssh_run_command,
+    "spotify_now_playing": spotify_now_playing,
+    "spotify_play_pause":  spotify_play_pause,
+    "spotify_next":        spotify_next,
+    "spotify_previous":    spotify_previous,
+    "spotify_stop":        spotify_stop,
+    "spotify_volume":      spotify_volume,
+    "spotify_search":      spotify_search,
+    "spotify_play":        spotify_play,
 }
 
 TOOL_SCHEMAS = [
@@ -1075,6 +1126,89 @@ TOOL_SCHEMAS = [
             "name": "ssh_get_all_metrics",
             "description": "Get metrics from all configured SSH hosts at once.",
             "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_now_playing",
+            "description": "Get the currently playing Spotify track (title, artist, play/pause status).",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_play_pause",
+            "description": "Toggle Spotify play/pause.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_next",
+            "description": "Skip to the next Spotify track.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_previous",
+            "description": "Go back to the previous Spotify track.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_stop",
+            "description": "Stop Spotify playback.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_volume",
+            "description": "Set Spotify playback volume (0–100).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "percent": {"type": "integer", "description": "Volume level 0–100"}
+                },
+                "required": ["percent"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_search",
+            "description": "Open Spotify app focused on a search query so the user can browse and pick a result.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query (song, artist, album, playlist)"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_play",
+            "description": "Search Spotify and immediately play the best matching track, artist, or playlist. Requires SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET configured in .env.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to play — song name, artist, playlist"},
+                    "kind":  {"type": "string", "enum": ["track", "artist", "playlist"], "description": "Type of result (default: track)"}
+                },
+                "required": ["query"]
+            }
         }
     },
     {
