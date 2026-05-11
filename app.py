@@ -9,9 +9,11 @@ from flask import Flask, request, jsonify, render_template, Response
 from dotenv import load_dotenv, set_key
 from tools import TOOL_SCHEMAS, TOOL_FUNCTIONS
 import db
+import ssh_metrics as ssh
 
 load_dotenv()
 db.init()
+ssh.start_all_monitors()
 
 app = Flask(__name__)
 conversation_history = []
@@ -219,7 +221,7 @@ def download_voice():
     return Response(stream(), mimetype="text/event-stream")
 
 
-# ── Tailscale ──────────────────────────────────────────────────────────────────
+# ── Tailscale + SSH metrics ────────────────────────────────────────────────────
 
 @app.route("/api/tailscale")
 def tailscale_status():
@@ -249,10 +251,65 @@ def tailscale_status():
                 "self":     False,
                 "os":       peer.get("OS", ""),
             })
+
+        # Merge in latest SSH metrics for any configured host
+        ssh_hosts = {h["hostname"]: h for h in ssh.list_hosts()}
+        for m in machines:
+            hn = m["hostname"]
+            if hn in ssh_hosts:
+                metrics = ssh.get_recent_metrics(hn)
+                m["metrics"] = metrics
+                m["ssh_configured"] = True
+            else:
+                m["metrics"] = None
+                m["ssh_configured"] = False
+
         machines.sort(key=lambda m: (not m["self"], not m["online"], m["hostname"]))
         return jsonify({"machines": machines})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ssh/hosts", methods=["GET"])
+def ssh_hosts():
+    return jsonify({"hosts": ssh.list_hosts()})
+
+
+@app.route("/api/ssh/hosts", methods=["POST"])
+def ssh_add_host():
+    d = request.json
+    result = ssh.add_host(
+        hostname=d["hostname"], ip=d["ip"],
+        username=d.get("username", "root"),
+        port=int(d.get("port", 22)),
+        key_path=d.get("key_path", ""),
+        password=d.get("password", ""),
+    )
+    return jsonify({"status": result})
+
+
+@app.route("/api/ssh/hosts/<hostname>", methods=["DELETE"])
+def ssh_remove_host(hostname):
+    return jsonify({"status": ssh.remove_host(hostname)})
+
+
+@app.route("/api/ssh/metrics/<hostname>", methods=["POST"])
+def ssh_collect(hostname):
+    result = ssh.collect_metrics(hostname)
+    return jsonify(result)
+
+
+@app.route("/api/ssh/metrics/all", methods=["POST"])
+def ssh_collect_all():
+    results = ssh.collect_all_metrics()
+    return jsonify({"results": results})
+
+
+@app.route("/api/ssh/run", methods=["POST"])
+def ssh_run():
+    d = request.json
+    out = ssh.run_remote(d["hostname"], d["command"])
+    return jsonify({"output": out})
 
 
 # ── Concepts (auto-generated system insights) ─────────────────────────────────

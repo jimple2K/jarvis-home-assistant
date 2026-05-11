@@ -22,6 +22,9 @@ def _conn():
 def init():
     with _lock, _conn() as c:
         c.executescript("""
+            PRAGMA foreign_keys = ON;""")
+    with _lock, _conn() as c:
+        c.executescript("""
             CREATE TABLE IF NOT EXISTS memories (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 type        TEXT    DEFAULT 'fact',
@@ -55,6 +58,12 @@ def init():
             CREATE INDEX IF NOT EXISTS mem_created    ON memories(created_at DESC);
             CREATE INDEX IF NOT EXISTS topics_active  ON topics(active DESC);
         """)
+    # SSH schema lives in ssh_metrics to keep it colocated
+    try:
+        import ssh_metrics
+        ssh_metrics.init_schema()
+    except Exception:
+        pass
 
 
 # ── Memories ──────────────────────────────────────────────────────────────────

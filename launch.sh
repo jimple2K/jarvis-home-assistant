@@ -21,9 +21,13 @@ for i in $(seq 1 24); do
   fi
 done
 
-# Open in browser — prefer firefox, fallback to xdg-open
-if command -v firefox >/dev/null 2>&1; then
-  firefox --new-window http://localhost:5757/ >/dev/null 2>&1 &
+# Open in Google Chrome as an app window (no tabs/URL bar)
+if command -v google-chrome >/dev/null 2>&1; then
+  google-chrome --app=http://localhost:5757/ --new-window >/dev/null 2>&1 &
+elif command -v chromium >/dev/null 2>&1; then
+  chromium --app=http://localhost:5757/ --new-window >/dev/null 2>&1 &
+elif command -v chromium-browser >/dev/null 2>&1; then
+  chromium-browser --app=http://localhost:5757/ --new-window >/dev/null 2>&1 &
 else
   xdg-open http://localhost:5757/ >/dev/null 2>&1 &
 fi

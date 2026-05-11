@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.error
 import browser as _browser
 import db
+import ssh_metrics as _ssh
 
 
 def _run(cmd, timeout=30, cwd=None):
@@ -403,6 +404,65 @@ def remove_concept(concept_id: int) -> str:
     return db.remove_concept(concept_id)
 
 
+# ── SSH / Remote machine tools ────────────────────────────────────────────────
+
+def ssh_add_host(hostname: str, ip: str, username: str = "root",
+                 port: int = 22, key_path: str = "", password: str = "") -> str:
+    return _ssh.add_host(hostname, ip, username=username, port=port,
+                         key_path=key_path, password=password)
+
+
+def ssh_remove_host(hostname: str) -> str:
+    return _ssh.remove_host(hostname)
+
+
+def ssh_list_hosts() -> str:
+    hosts = _ssh.list_hosts()
+    if not hosts:
+        return "No SSH hosts configured."
+    lines = []
+    for h in hosts:
+        status = "✓" if h["enabled"] else "✗"
+        err    = f" [err: {h['last_error']}]" if h.get("last_error") else ""
+        lines.append(f"{status} {h['username']}@{h['hostname']} ({h['ip']}:{h['port']}){err}")
+    return "\n".join(lines)
+
+
+def ssh_get_metrics(hostname: str) -> str:
+    m = _ssh.collect_metrics(hostname)
+    if "error" in m:
+        return f"Error connecting to {hostname}: {m['error']}"
+    up = m.get("uptime_s", 0)
+    days, rem = divmod(up, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins = rem // 60
+    uptime_str = f"{days}d {hours}h {mins}m" if days else f"{hours}h {mins}m"
+    return (
+        f"{hostname} — {m.get('os','')}\n"
+        f"CPU: {m['cpu_pct']}%  RAM: {m['mem_pct']}%  Disk: {m['disk_pct']}%\n"
+        f"Load: {m['load_1m']}  Uptime: {uptime_str}"
+    )
+
+
+def ssh_get_all_metrics() -> str:
+    results = _ssh.collect_all_metrics()
+    if not results:
+        return "No SSH hosts configured."
+    lines = []
+    for m in results:
+        if "error" in m:
+            lines.append(f"✗ {m['hostname']}: {m['error']}")
+        else:
+            lines.append(
+                f"✓ {m['hostname']} — CPU {m['cpu_pct']}% | RAM {m['mem_pct']}% | Disk {m['disk_pct']}% | Load {m['load_1m']}"
+            )
+    return "\n".join(lines)
+
+
+def ssh_run_command(hostname: str, command: str) -> str:
+    return _ssh.run_remote(hostname, command)
+
+
 # ── Cron / scheduled tasks ────────────────────────────────────────────────────
 
 def cron_list() -> str:
@@ -461,6 +521,12 @@ TOOL_FUNCTIONS = {
     "list_topics":        list_topics,
     "add_concept":        add_concept,
     "remove_concept":     remove_concept,
+    "ssh_add_host":       ssh_add_host,
+    "ssh_remove_host":    ssh_remove_host,
+    "ssh_list_hosts":     ssh_list_hosts,
+    "ssh_get_metrics":    ssh_get_metrics,
+    "ssh_get_all_metrics":ssh_get_all_metrics,
+    "ssh_run_command":    ssh_run_command,
 }
 
 TOOL_SCHEMAS = [
@@ -949,6 +1015,80 @@ TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {"concept_id": {"type": "integer"}},
                 "required": ["concept_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_add_host",
+            "description": "Add a Tailscale machine for persistent SSH monitoring. Jarvis will keep a live SSH connection and notify on failure.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hostname": {"type": "string"},
+                    "ip":       {"type": "string", "description": "Tailscale IP (100.x.x.x)"},
+                    "username": {"type": "string", "description": "SSH username (default: root)"},
+                    "port":     {"type": "integer", "description": "SSH port (default: 22)"},
+                    "key_path": {"type": "string", "description": "Path to SSH private key"},
+                    "password": {"type": "string", "description": "SSH password if no key"}
+                },
+                "required": ["hostname", "ip"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_remove_host",
+            "description": "Remove a host from SSH monitoring.",
+            "parameters": {
+                "type": "object",
+                "properties": {"hostname": {"type": "string"}},
+                "required": ["hostname"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_list_hosts",
+            "description": "List all configured SSH hosts and their connection status.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_get_metrics",
+            "description": "Get live CPU, RAM, disk, load, and uptime from a specific host via SSH.",
+            "parameters": {
+                "type": "object",
+                "properties": {"hostname": {"type": "string"}},
+                "required": ["hostname"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_get_all_metrics",
+            "description": "Get metrics from all configured SSH hosts at once.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_run_command",
+            "description": "Run any shell command on a remote machine via SSH.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hostname": {"type": "string"},
+                    "command":  {"type": "string"}
+                },
+                "required": ["hostname", "command"]
             }
         }
     },

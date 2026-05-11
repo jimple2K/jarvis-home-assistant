@@ -216,16 +216,25 @@
     #ts-list,#concepts-list { flex:1;overflow-y:auto;padding:6px 0; }
 
     .ts-machine {
-      padding:6px 12px;display:flex;align-items:center;gap:8px;
-      font-size:11px;color:var(--txt);
+      padding:6px 10px;display:flex;align-items:flex-start;gap:7px;
+      font-size:11px;color:var(--txt);border-bottom:1px solid rgba(48,54,61,.4);
     }
-    .ts-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
-    .ts-dot.on{background:var(--green);box-shadow:0 0 4px var(--green);}
-    .ts-dot.off{background:var(--border);}
+    .ts-machine:last-child{border-bottom:none;}
+    .ts-dots{display:flex;flex-direction:column;gap:3px;padding-top:3px;flex-shrink:0;}
+    .ts-dot{width:6px;height:6px;border-radius:50%;}
+    .ts-dot.ts{background:var(--green);box-shadow:0 0 4px var(--green);}
+    .ts-dot.ts.off{background:var(--border);box-shadow:none;}
+    .ts-dot.ssh-live{background:var(--blue);box-shadow:0 0 4px var(--blue);}
+    .ts-dot.ssh-dead{background:var(--red);}
+    .ts-dot.ssh-none{background:transparent;border:1px solid var(--border);}
     .ts-info{flex:1;min-width:0;}
     .ts-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .ts-ip{font-size:9px;color:var(--muted);}
-    .ts-self{font-size:9px;color:var(--blue);}
+    .ts-sub{font-size:9px;color:var(--muted);margin-top:1px;}
+    .ts-metrics{font-size:9px;color:var(--muted);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap;}
+    .ts-metric{background:var(--bg3);border-radius:4px;padding:1px 5px;}
+    .ts-metric.warn{color:var(--orange);}
+    .ts-metric.crit{color:var(--red);}
+    .ts-self-badge{font-size:8px;color:var(--blue);border:1px solid var(--blue);border-radius:3px;padding:0 3px;margin-left:4px;}
 
     .concept-item {
       padding:5px 12px;display:flex;align-items:center;gap:8px;font-size:10px;
@@ -333,6 +342,20 @@
   <div class="srow">
     <button class="sbtn" onclick="downloadVoice()">Download Voice</button>
     <span id="dl-msg"></span>
+  </div>
+
+  <hr/>
+  <h3>SSH Hosts</h3>
+  <div id="ssh-host-list" style="font-size:10px;color:var(--muted);margin-bottom:6px;"></div>
+  <div class="sg"><label>Hostname</label><input id="ssh-hostname" placeholder="server-01"/></div>
+  <div class="sg"><label>Tailscale IP</label><input id="ssh-ip" placeholder="100.x.x.x"/></div>
+  <div class="sg"><label>Username</label><input id="ssh-user" placeholder="root" value="root"/></div>
+  <div class="sg"><label>Port</label><input id="ssh-port" placeholder="22" value="22" style="width:70px"/></div>
+  <div class="sg"><label>Key Path (optional)</label><input id="ssh-key" placeholder="~/.ssh/id_ed25519"/></div>
+  <div class="sg"><label>Password (optional)</label><input id="ssh-pass" type="password" placeholder="leave blank if using key"/></div>
+  <div class="srow">
+    <button class="sbtn p" onclick="addSshHost()">Add &amp; Monitor</button>
+    <span id="ssh-msg" style="font-size:10px;color:var(--green);"></span>
   </div>
 
   <hr/>
@@ -519,17 +542,48 @@ async function loadTailscale() {
     const res  = await fetch('/api/tailscale');
     const data = await res.json();
     const list = document.getElementById('ts-list');
-    if (data.error) { list.innerHTML=`<div class="ts-machine" style="color:var(--red);font-size:10px">${esc(data.error)}</div>`; return; }
-    list.innerHTML = (data.machines||[]).map(m=>`
-      <div class="ts-machine">
-        <div class="ts-dot ${m.online?'on':'off'}"></div>
-        <div class="ts-info">
-          <div class="ts-name">${esc(m.hostname)}${m.self?' <span class="ts-self">(this)</span>':''}</div>
-          <div class="ts-ip">${esc(m.ip)}${m.os?` · ${esc(m.os)}`:''}${!m.online?' · offline':''}</div>
+    if (data.error) {
+      list.innerHTML=`<div class="ts-machine" style="color:var(--red);font-size:10px">${esc(data.error)}</div>`;
+      return;
+    }
+    list.innerHTML = (data.machines||[]).map(m => {
+      const mx = m.metrics;
+      const sshClass = !m.ssh_configured ? 'ssh-none'
+                     : mx?.live          ? 'ssh-live'
+                     : m.ssh_configured  ? 'ssh-dead' : 'ssh-none';
+
+      let metricsHtml = '';
+      if (mx) {
+        const cpuCls  = mx.cpu_pct  > 85 ? 'crit' : mx.cpu_pct  > 70 ? 'warn' : '';
+        const memCls  = mx.mem_pct  > 90 ? 'crit' : mx.mem_pct  > 80 ? 'warn' : '';
+        const diskCls = mx.disk_pct > 90 ? 'crit' : mx.disk_pct > 80 ? 'warn' : '';
+        metricsHtml = `<div class="ts-metrics">
+          <span class="ts-metric ${cpuCls}">CPU ${mx.cpu_pct ?? '?'}%</span>
+          <span class="ts-metric ${memCls}">RAM ${mx.mem_pct ?? '?'}%</span>
+          <span class="ts-metric ${diskCls}">Disk ${mx.disk_pct ?? '?'}%</span>
+          ${mx.load_1m >= 0 ? `<span class="ts-metric">Load ${mx.load_1m}</span>` : ''}
+        </div>`;
+      }
+
+      const sshTip = !m.ssh_configured ? 'SSH: not configured'
+                   : mx?.live          ? 'SSH: live connection'
+                   : 'SSH: reconnecting…';
+
+      return `<div class="ts-machine">
+        <div class="ts-dots">
+          <div class="ts-dot ts ${m.online?'':'off'}" title="Tailscale: ${m.online?'online':'offline'}"></div>
+          <div class="ts-dot ${sshClass}" title="${sshTip}"></div>
         </div>
-      </div>`).join('');
+        <div class="ts-info">
+          <div class="ts-name">${esc(m.hostname)}${m.self?'<span class="ts-self-badge">this</span>':''}</div>
+          <div class="ts-sub">${esc(m.ip)}${m.os?' · '+esc(m.os):''}</div>
+          ${metricsHtml}
+        </div>
+      </div>`;
+    }).join('');
   } catch(e) {
-    document.getElementById('ts-list').innerHTML='<div class="ts-machine" style="color:var(--muted);font-size:10px">Tailscale unavailable</div>';
+    document.getElementById('ts-list').innerHTML=
+      '<div class="ts-machine" style="color:var(--muted);font-size:10px">Tailscale unavailable</div>';
   }
 }
 
@@ -612,17 +666,59 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){interrupt();document.getElementById('settings').classList.remove('open');}
 });
 
+/* ── SSH settings UI ── */
+async function loadSshHosts() {
+  try {
+    const res  = await fetch('/api/ssh/hosts');
+    const data = await res.json();
+    const el   = document.getElementById('ssh-host-list');
+    if (!data.hosts?.length) { el.textContent = 'No SSH hosts configured.'; return; }
+    el.innerHTML = data.hosts.map(h => {
+      const dot = h.live ? '🟢' : (h.last_error ? '🔴' : '🟡');
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--border)">
+        <span>${dot} ${esc(h.username)}@${esc(h.hostname)}</span>
+        <button onclick="removeSshHost('${esc(h.hostname)}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:12px;">×</button>
+      </div>`;
+    }).join('');
+  } catch {}
+}
+
+async function addSshHost() {
+  const hostname = document.getElementById('ssh-hostname').value.trim();
+  const ip       = document.getElementById('ssh-ip').value.trim();
+  if (!hostname || !ip) { flash('ssh-msg','Hostname and IP required'); return; }
+  const res = await fetch('/api/ssh/hosts', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+      hostname, ip,
+      username: document.getElementById('ssh-user').value.trim() || 'root',
+      port:     parseInt(document.getElementById('ssh-port').value) || 22,
+      key_path: document.getElementById('ssh-key').value.trim(),
+      password: document.getElementById('ssh-pass').value,
+    })
+  });
+  const d = await res.json();
+  flash('ssh-msg', d.status || 'Added!');
+  loadSshHosts(); loadTailscale();
+}
+
+async function removeSshHost(hostname) {
+  await fetch(`/api/ssh/hosts/${hostname}`, { method:'DELETE' });
+  loadSshHosts(); loadTailscale();
+}
+
 /* ── Init + polling ── */
 loadMics();
 pingServer();
 loadTopics();
 loadTailscale();
 loadConcepts();
+loadSshHosts();
 document.getElementById('cfg-voice').value='{{ config.piper_voice }}';
 
 setInterval(loadTopics,    5000);
-setInterval(loadTailscale, 30000);
+setInterval(loadTailscale, 10000);   // faster now — shows live SSH state
 setInterval(loadConcepts,  15000);
+setInterval(loadSshHosts,  15000);
 </script>
 </body>
 </html>
