@@ -5,9 +5,14 @@ import Center from './components/Center.jsx';
 import RightSidebar from './components/RightSidebar.jsx';
 import SettingsDrawer from './components/SettingsDrawer.jsx';
 import RaceHubDrawer from './components/RaceHubDrawer.jsx';
+import ToastHost from './components/ToastHost.jsx';
+import ShortcutsOverlay from './components/ShortcutsOverlay.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { useSpeech } from './hooks/useSpeech.js';
+import { usePolling } from './hooks/usePolling.js';
 import { startBargeInMonitor } from './hooks/startBargeInMonitor.js';
 import { stripCodeFencesForTts } from './lib/stripCodeFencesForTts.js';
+import { toast } from './lib/toast.js';
 import {
   getConfig,
   getTopics,
@@ -24,139 +29,160 @@ import {
 
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+const MAX_HISTORY = 12;
+
+// True when the TTS_SINK is a personal listening device the mic can't hear
+// (Bluetooth headphones, wired headphones via USB, virtual sinks, etc).
+// Used to skip the barge-in monitor that would otherwise false-trigger on
+// ambient mic noise and cut Jarvis off after a syllable or two.
+function isHeadphoneLikeSink(name) {
+  const n = (name || '').toLowerCase();
+  if (!n) return false;
+  return (
+    n.startsWith('bluez_') ||
+    n.includes('bluetooth') ||
+    n.startsWith('bt_') ||
+    n.includes('headphone') ||
+    n.includes('headset') ||
+    n.includes('a2dp') ||
+    n.includes('hsp')
+  );
+}
+
+// Two-key sequence handler — supports e.g. `g s` to open settings.
+function useSequenceKey(onSequence) {
+  const last = useRef({ key: '', ts: 0 });
+  return useCallback((e) => {
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const now = performance.now();
+    const k = e.key.toLowerCase();
+    if (last.current.key && now - last.current.ts < 900) {
+      onSequence(last.current.key + k, e);
+      last.current = { key: '', ts: 0 };
+      return;
+    }
+    last.current = { key: k, ts: now };
+  }, [onSequence]);
+}
+
 export default function App() {
-  // ── Core state ──────────────────────────────────────────────────────────────
-  const [uiState,      setUiStateRaw]  = useState('');      // ''|listening|thinking|speaking
-  const uiStateRef     = useRef('');
-  const [alwaysOn,     setAlwaysOnRaw] = useState(false);
-  const alwaysOnRef    = useRef(false);
-  const [micId,        setMicIdRaw]    = useState('');
-  const micIdRef       = useRef('');
+  // ── Core state ─────────────────────────────────────────────────────────────
+  const [uiState, setUiStateRaw] = useState('');           // ''|listening|thinking|speaking
+  const uiStateRef = useRef('');
+  const [alwaysOn, setAlwaysOnRaw] = useState(false);
+  const alwaysOnRef = useRef(false);
+  const [micId, setMicId] = useState('');
+  const micIdRef = useRef('');
   const speakAbortedRef = useRef(false);
-  const bargeStopRef   = useRef(() => {});
+  const bargeStopRef = useRef(() => {});
 
-  // ── Transcript ───────────────────────────────────────────────────────────────
-  const [txYou,    setTxYou]    = useState('');
-  const [txJarvis, setTxJarvis] = useState('');
+  // ── Transcript / history ───────────────────────────────────────────────────
+  const [txYou, setTxYou] = useState('');                  // current interim input
+  const [txJarvis, setTxJarvis] = useState('');            // most recent Jarvis reply
+  const [history, setHistory] = useState([]);              // [{ id, user, userKind, reply, ts }]
+  const [activeTool, setActiveTool] = useState(null);
 
-  // ── Code blocks ──────────────────────────────────────────────────────────────
+  // ── Code blocks ────────────────────────────────────────────────────────────
   const [codeBlocks, setCodeBlocks] = useState([]);
 
+  // ── Typed input ────────────────────────────────────────────────────────────
   const [typedDraft, setTypedDraft] = useState('');
 
-  // ── Sidebar data ─────────────────────────────────────────────────────────────
-  const [topics,    setTopics]    = useState([]);
+  // ── Sidebar data ───────────────────────────────────────────────────────────
+  const [topics, setTopics] = useState([]);
   const [tailscale, setTailscale] = useState(null);
-  const [concepts,  setConcepts]  = useState(null);
-  const [sshHosts,  setSshHosts]  = useState([]);
-  const [spotify,   setSpotify]   = useState(null);
+  const [concepts, setConcepts] = useState(null);
+  const [, setSshHosts] = useState([]);
+  const [spotify, setSpotify] = useState(null);
 
-  // ── Top bar ──────────────────────────────────────────────────────────────────
-  const [apiOnline,    setApiOnline]    = useState(null);   // null=unknown, true, false
+  // ── Top bar ────────────────────────────────────────────────────────────────
+  const [apiOnline, setApiOnline] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [raceHubOpen,  setRaceHubOpen]  = useState(false);
-  const [config,       setConfig]       = useState(null);
+  const [raceHubOpen, setRaceHubOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [config, setConfig] = useState(null);
 
-  // ── Helpers ──────────────────────────────────────────────────────────────────
-  function setUiState(s) {
+  // ── State helpers (React-driven, no DOM manipulation) ──────────────────────
+  const setUiState = useCallback((s) => {
     uiStateRef.current = s;
     setUiStateRaw(s);
-    // Apply to body className for CSS animations
-    document.body.className = s || '';
-    // Update state label text
-    const label = document.getElementById('state-label');
-    if (label) {
-      label.textContent = { '': 'Ready', listening: 'Listening…', thinking: 'Thinking…', speaking: 'Speaking…' }[s] ?? s;
-    }
-  }
+  }, []);
 
-  function isBusy() {
-    return uiStateRef.current !== '';
-  }
+  // Reflect state class on body so existing CSS animations keep working.
+  useEffect(() => {
+    document.body.className = uiState || '';
+  }, [uiState]);
+
+  function isBusy() { return uiStateRef.current !== ''; }
 
   function setAlwaysOn(val) {
     alwaysOnRef.current = val;
     setAlwaysOnRaw(val);
   }
 
-  function setMicId(val) {
+  function setMicIdState(val) {
     micIdRef.current = val;
-    setMicIdRaw(val);
+    setMicId(val);
   }
 
-  // ── Tool pill ────────────────────────────────────────────────────────────────
-  function showTool(name) {
-    const pill = document.getElementById('tool-pill');
-    if (pill) { pill.textContent = `⚙ ${name}`; pill.classList.add('on'); }
-  }
-  function hideTool() {
-    const pill = document.getElementById('tool-pill');
-    if (pill) pill.classList.remove('on');
-  }
-
-  // ── Speech hook ───────────────────────────────────────────────────────────────
+  // ── Speech hook ────────────────────────────────────────────────────────────
   function speechErrorMessage(code) {
     switch (code) {
-      case 'not-supported':       return 'Speech recognition not supported in this browser. Use Chrome.';
-      case 'not-allowed':         return 'Mic permission denied — click 🔒 in the address bar and allow Microphone for 127.0.0.1.';
-      case 'service-not-allowed': return 'Chrome blocked the speech service. Check chrome://settings/content/microphone.';
-      case 'network':             return 'Speech recognition needs internet — Chrome routes SR to Google. Check your connection.';
-      case 'audio-capture':       return 'No microphone detected. Plug one in or pick a different device in Settings.';
-      case 'aborted':             return 'Speech recognition was aborted.';
+      case 'not-supported':          return 'Speech recognition not supported in this browser. Use Chrome.';
+      case 'not-allowed':            return 'Mic permission denied — click 🔒 in the address bar and allow Microphone.';
+      case 'service-not-allowed':    return 'Chrome blocked the speech service. Check chrome://settings/content/microphone.';
+      case 'network':                return 'Speech recognition needs internet — Chrome routes SR to Google. Check your connection.';
+      case 'audio-capture':          return 'No microphone detected. Plug one in or pick a different device in Settings.';
+      case 'aborted':                return 'Speech recognition was aborted.';
       case 'language-not-supported': return 'Language not supported by Chrome speech recognition.';
-      default:                    return `Speech error: ${code}`;
+      default:                       return `Speech error: ${code}`;
     }
   }
 
   const speech = useSpeech({
+    endpointMs: 600,
     onInterim: (text) => {
+      if (uiStateRef.current === 'speaking') return;
       setTxYou(text);
     },
     onFinal: useCallback((text, error) => {
+      if (uiStateRef.current === 'speaking' && !error) return;
+
       if (error === 'rejected' || error === 'no-speech') {
-        // silent reject — clear interim
         setTxYou('');
-        uiStateRef.current = '';
-        setUiState('');
-        if (error === 'no-speech' && alwaysOnRef.current) {
-          setTimeout(() => {
-            if (!isBusy()) startListening();
-          }, 800);
-          return;
-        }
-        if (alwaysOnRef.current) {
-          setTimeout(() => { if (!isBusy()) startListening(); }, 800);
+        if (!isBusy() || uiStateRef.current === 'listening') {
+          setUiState(alwaysOnRef.current ? 'listening' : '');
         }
         return;
       }
       if (error && error !== 'rejected') {
-        // recognizer error — surface it so the user knows what happened
         console.warn('[jarvis] speech recognition error:', error);
         setTxYou('');
-        setTxJarvis(speechErrorMessage(error));
+        const msg = speechErrorMessage(error);
+        toast.error(msg, 'Speech error');
+        setTxJarvis(msg);
         setUiState('');
-        // Auto-clear the error after a while so the UI doesn't get stuck on it
         setTimeout(() => {
-          setTxJarvis(prev => prev === speechErrorMessage(error) ? '' : prev);
+          setTxJarvis(prev => (prev === msg ? '' : prev));
         }, 8000);
         if (alwaysOnRef.current && error !== 'not-allowed' && error !== 'not-supported') {
-          setTimeout(() => { if (!isBusy()) startListening(); }, 1500);
+          setTimeout(() => { if (!isBusy()) startListening(); }, 600);
         }
         return;
       }
-      // Success — send to Jarvis
       if (text) sendToJarvis(text);
-    }, []),
+    }, [setUiState]),
   });
 
-  // ── Start listening ──────────────────────────────────────────────────────────
+  // ── Listening control ──────────────────────────────────────────────────────
   function startListening() {
     setTxYou('');
     setUiState('listening');
-    speech.start(micIdRef.current || undefined);
+    if (!speech.isActive()) speech.start(micIdRef.current || undefined);
   }
 
-  // ── Interrupt ────────────────────────────────────────────────────────────────
   function interrupt() {
     bargeStopRef.current();
     bargeStopRef.current = () => {};
@@ -164,6 +190,35 @@ export default function App() {
     speech.abort();
     setUiState('');
     setTxYou('');
+  }
+
+  function handleOrbClick() {
+    if (isBusy() || uiStateRef.current === 'listening') {
+      interrupt();
+      return;
+    }
+    startListening();
+  }
+
+  function toggleAlwaysOn() {
+    const next = !alwaysOnRef.current;
+    setAlwaysOn(next);
+    if (next && !isBusy()) startListening();
+    if (!next) {
+      speech.abort();
+      if (uiStateRef.current === 'listening') setUiState('');
+    }
+  }
+
+  // ── Send to Jarvis ─────────────────────────────────────────────────────────
+  function pushHistory(userText, userKind, replyText) {
+    setHistory((prev) => {
+      const next = [
+        ...prev,
+        { id: Date.now() + Math.random(), user: userText, userKind, reply: replyText, ts: Date.now() },
+      ];
+      return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next;
+    });
   }
 
   function sendTypedToJarvis() {
@@ -177,49 +232,30 @@ export default function App() {
       raw;
     interrupt();
     setTxYou(`Typed — ${preview}`);
-    sendToJarvis(bridged);
+    sendToJarvis(bridged, { kind: 'typed', display: raw });
   }
 
-  // ── Orb click ────────────────────────────────────────────────────────────────
-  function handleOrbClick() {
-    if (isBusy() || uiStateRef.current === 'listening') {
-      interrupt();
-      return;
-    }
-    startListening();
-  }
-
-  // ── Toggle always-on ─────────────────────────────────────────────────────────
-  function toggleAlwaysOn() {
-    const next = !alwaysOnRef.current;
-    setAlwaysOn(next);
-    if (next && !isBusy()) startListening();
-  }
-
-  // ── Send to Jarvis ────────────────────────────────────────────────────────────
-  async function sendToJarvis(text) {
+  async function sendToJarvis(text, opts = {}) {
     setUiState('thinking');
     setTxJarvis('');
     try {
       const data = await sendChat(text);
       if (data.error && !data.reply) {
-        setUiState('');
-        setTxJarvis(`Error: ${data.error}`);
-        if (alwaysOnRef.current) {
-          setTimeout(() => { if (!isBusy()) startListening(); }, 1500);
-        }
+        const msg = `Error: ${data.error}`;
+        setTxJarvis(msg);
+        toast.error(data.error, 'Jarvis');
+        setUiState(alwaysOnRef.current ? 'listening' : '');
         return;
       }
 
       if (data.tools?.length) {
         for (const t of data.tools) {
-          showTool(t.tool);
-          await delay(300);
+          setActiveTool(t.tool);
+          await delay(220);
         }
-        hideTool();
-        // Refresh panels after tool calls
-        getTopics().then(d => setTopics(d.topics || []));
-        getConcepts().then(d => setConcepts(d));
+        setActiveTool(null);
+        getTopics().then(d => setTopics(d.topics || [])).catch(() => {});
+        getConcepts().then(d => setConcepts(d)).catch(() => {});
       }
 
       if (data.code_blocks?.length) {
@@ -228,53 +264,66 @@ export default function App() {
 
       const reply = data.error ? `Error: ${data.error}` : (data.reply || '');
       setTxJarvis(reply);
+      const displayedUser = opts.kind === 'typed' ? opts.display : text;
+      pushHistory(displayedUser, opts.kind || 'voice', reply);
 
       await speakReply(reply);
     } catch (e) {
-      setUiState('');
       setTxJarvis('Connection error.');
-      if (alwaysOnRef.current) {
-        setTimeout(() => { if (!isBusy()) startListening(); }, 1500);
-      }
+      toast.error('Connection error contacting Jarvis backend.', 'Network');
+      setUiState(alwaysOnRef.current ? 'listening' : '');
     }
   }
 
-  // ── Speak reply via Piper (server-side, blocking) ────────────────────────────
+  // ── Speak ──────────────────────────────────────────────────────────────────
   async function speakReply(text) {
-    if (!text) {
-      doneAfterSpeaking();
-      return;
-    }
+    if (!text) { doneAfterSpeaking(); return; }
     const lineForSpeech = stripCodeFencesForTts(text);
-    if (!lineForSpeech) {
-      doneAfterSpeaking();
-      return;
-    }
+    if (!lineForSpeech) { doneAfterSpeaking(); return; }
     speakAbortedRef.current = false;
     setUiState('speaking');
 
+    speech.abort();
+
     bargeStopRef.current = () => {};
-    const stopMonitor = startBargeInMonitor({
-      micId: micIdRef.current || undefined,
-      onBarge: () => {
-        if (speakAbortedRef.current) return;
-        speakAbortedRef.current = true;
-        bargeStopRef.current();
-        bargeStopRef.current = () => {};
-        ttsStop();
-        speech.abort();
-        setTimeout(() => {
+
+    // Barge-in monitoring only makes sense when TTS audio can bleed back into
+    // the mic (i.e. output is going through speakers in the same room). When
+    // the user routes TTS to headphones (Bluetooth, USB) or any dedicated
+    // sink, the mic only ever hears ambient noise — and a tweaked HVAC vent
+    // or keyboard click will falsely "barge" and cut Jarvis off mid-word.
+    // In that case we just play TTS to completion; the user can interrupt
+    // with the orb or Escape.
+    const sink = (config?.tts_sink || '').toLowerCase();
+    const skipBargeIn = isHeadphoneLikeSink(sink);
+
+    if (!skipBargeIn) {
+      const stopMonitor = startBargeInMonitor({
+        micId: micIdRef.current || undefined,
+        // More forgiving thresholds — the previous defaults were tuned for a
+        // very quiet room and would cut off on a fan or breath.
+        absMin: 0.055,
+        ratio: 2.4,
+        framesNeeded: 7,
+        learnMs: 600,
+        onBarge: () => {
+          if (speakAbortedRef.current) return;
+          speakAbortedRef.current = true;
+          bargeStopRef.current();
+          bargeStopRef.current = () => {};
+          ttsStop();
           setUiState('listening');
           speech.start(micIdRef.current || undefined);
-        }, 60);
-      },
-    });
-    bargeStopRef.current = stopMonitor;
+        },
+      });
+      bargeStopRef.current = stopMonitor;
+    }
 
     try {
       const result = await tts(lineForSpeech);
       if (result.status === 503) {
         setTxJarvis(prev => prev + ` [Voice "${result.voice}" not downloaded — open Settings]`);
+        toast.warn('Open Settings → Voice to download the missing Piper voice.', 'Voice missing');
       }
     } catch {}
     finally {
@@ -289,99 +338,158 @@ export default function App() {
       speakAbortedRef.current = false;
       return;
     }
-    setUiState('');
-    // 1.8s gap after speaking — enough for paplay to fully drain
     if (alwaysOnRef.current) {
+      setUiState('listening');
       setTimeout(() => {
-        if (!isBusy() && uiStateRef.current !== 'listening') startListening();
-      }, 1800);
+        if (uiStateRef.current === 'listening' && !speech.isActive()) {
+          speech.start(micIdRef.current || undefined);
+        }
+      }, 250);
+    } else {
+      setUiState('');
     }
   }
 
-  // ── New chat ──────────────────────────────────────────────────────────────────
   function handleNewChat() {
     resetChat().catch(() => {});
     setTxYou('');
     setTxJarvis('');
+    setHistory([]);
     setCodeBlocks([]);
     setTypedDraft('');
     setSettingsOpen(false);
+    toast.success('Conversation reset.', 'New chat');
   }
 
-  // ── Keyboard ──────────────────────────────────────────────────────────────────
+  // ── Keyboard ───────────────────────────────────────────────────────────────
+  const onSequence = useCallback((seq, e) => {
+    if (seq === 'gs') { e.preventDefault(); setSettingsOpen(true); }
+    if (seq === 'gr') { e.preventDefault(); setRaceHubOpen(true); }
+  }, []);
+  const seqHandler = useSequenceKey(onSequence);
+
   useEffect(() => {
     function onKeyDown(e) {
-      // Ignore if focused on an input/textarea/select
       const tag = document.activeElement?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const inField = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 
-      if (e.code === 'Space') {
-        e.preventDefault();
-        handleOrbClick();
-      }
+      // ESC always works
       if (e.key === 'Escape') {
+        if (shortcutsOpen) { setShortcutsOpen(false); return; }
+        if (settingsOpen)  { setSettingsOpen(false);  return; }
+        if (raceHubOpen)   { setRaceHubOpen(false);   return; }
         interrupt();
-        setSettingsOpen(false);
-        setRaceHubOpen(false);
+        return;
       }
+
+      // ? toggles help (when not typing)
+      if (!inField && (e.key === '?' || (e.shiftKey && e.key === '/'))) {
+        e.preventDefault();
+        setShortcutsOpen((s) => !s);
+        return;
+      }
+
+      // Ctrl-only shortcuts
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'Enter') {
+          // handled inside Center for textareas, but allow global typed-send too
+          if (typedDraft.trim() && uiStateRef.current !== 'thinking') {
+            e.preventDefault();
+            sendTypedToJarvis();
+          }
+          return;
+        }
+        if ((e.key === 'l' || e.key === 'L') && !inField) {
+          e.preventDefault();
+          handleNewChat();
+          return;
+        }
+        if (e.key === '/' && !inField) {
+          e.preventDefault();
+          toggleAlwaysOn();
+          return;
+        }
+        return;
+      }
+
+      if (inField) return;
+
+      if (e.code === 'Space') { e.preventDefault(); handleOrbClick(); return; }
+
+      // G-prefixed sequences
+      seqHandler(e);
     }
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, []); // eslint-disable-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shortcutsOpen, settingsOpen, raceHubOpen, typedDraft, seqHandler]);
 
-  // ── Initial data load ─────────────────────────────────────────────────────────
+  // ── Initial data load + Polling ────────────────────────────────────────────
   useEffect(() => {
-    getConfig().then(cfg => setConfig(cfg)).catch(() => {});
+    getConfig().then(setConfig).catch(() => {});
     getTopics().then(d => setTopics(d.topics || [])).catch(() => {});
-    getTailscale().then(d => setTailscale(d)).catch(() => {});
-    getConcepts().then(d => setConcepts(d)).catch(() => {});
+    getTailscale().then(setTailscale).catch(() => {});
+    getConcepts().then(setConcepts).catch(() => {});
     getSshHosts().then(d => setSshHosts(d.hosts || [])).catch(() => {});
-    getSpotifyCurrent().then(d => setSpotify(d)).catch(() => {});
-
-    // Initial API ping
-    ping().then(d => setApiOnline(d.status === 'online')).catch(() => setApiOnline(false));
+    getSpotifyCurrent().then(setSpotify).catch(() => {});
+    ping()
+      .then(d => setApiOnline(d.status === 'online'))
+      .catch(() => setApiOnline(false));
   }, []);
 
-  // ── Polling ───────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const t1 = setInterval(() => {
-      getTopics().then(d => setTopics(d.topics || [])).catch(() => {});
-    }, 5000);
-    const t2 = setInterval(() => {
-      getTailscale().then(d => setTailscale(d)).catch(() => {});
-    }, 10000);
-    const t3 = setInterval(() => {
-      getConcepts().then(d => setConcepts(d)).catch(() => {});
-      getSshHosts().then(d => setSshHosts(d.hosts || [])).catch(() => {});
-    }, 15000);
-    const t4 = setInterval(() => {
-      getSpotifyCurrent().then(d => setSpotify(d)).catch(() => {});
-    }, 4000);
-    return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3); clearInterval(t4); };
-  }, []);
+  usePolling(async () => {
+    const d = await getTopics();
+    setTopics(d.topics || []);
+  }, 5000);
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  usePolling(async () => setTailscale(await getTailscale()), 10000);
+
+  usePolling(async () => {
+    setConcepts(await getConcepts());
+    const s = await getSshHosts();
+    setSshHosts(s.hosts || []);
+  }, 15000);
+
+  usePolling(async () => setSpotify(await getSpotifyCurrent()), 4000);
+
+  // Periodically re-ping LM Studio so the indicator stays honest.
+  usePolling(async () => {
+    try {
+      const d = await ping();
+      setApiOnline(d.status === 'online');
+    } catch {
+      setApiOnline(false);
+    }
+  }, 30000);
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <>
+    <ErrorBoundary>
       <TopBar
         apiOnline={apiOnline}
         alwaysOn={alwaysOn}
+        spotify={spotify}
         onToggleAlwaysOn={toggleAlwaysOn}
         onNewChat={handleNewChat}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenRaceHub={() => setRaceHubOpen(true)}
+        onOpenHelp={() => setShortcutsOpen(true)}
       />
       <LeftSidebar topics={topics} onTopicsChange={setTopics} />
       <Center
+        uiState={uiState}
         txYou={txYou}
         txJarvis={txJarvis}
+        history={history}
         codeBlocks={codeBlocks}
+        activeTool={activeTool}
         onOrbClick={handleOrbClick}
         onClearCode={() => setCodeBlocks([])}
         typedDraft={typedDraft}
         onTypedDraftChange={setTypedDraft}
         onSendTyped={sendTypedToJarvis}
         typedSendDisabled={!typedDraft.trim() || uiState === 'thinking'}
+        micId={micIdRef.current}
       />
       <RightSidebar
         tailscale={tailscale}
@@ -393,15 +501,24 @@ export default function App() {
         open={settingsOpen}
         config={config}
         onClose={() => setSettingsOpen(false)}
-        onResetConversation={() => { setTxYou(''); setTxJarvis(''); setCodeBlocks([]); setTypedDraft(''); }}
+        onResetConversation={() => {
+          setTxYou(''); setTxJarvis(''); setHistory([]); setCodeBlocks([]); setTypedDraft('');
+        }}
         onApiOnlineChange={setApiOnline}
         onSshHostsChange={setSshHosts}
         onSetUiState={setUiState}
+        onMicIdChange={setMicIdState}
+        micId={micId}
       />
       <RaceHubDrawer
         open={raceHubOpen}
         onClose={() => setRaceHubOpen(false)}
       />
-    </>
+      <ShortcutsOverlay
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
+      <ToastHost />
+    </ErrorBoundary>
   );
 }

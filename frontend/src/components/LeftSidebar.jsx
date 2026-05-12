@@ -1,84 +1,125 @@
 import React, { useState } from 'react';
 import { createTopic, deleteTopic, activateTopic, getTopics } from '../api.js';
 import ActivityPanel from './ActivityPanel.jsx';
-
-function esc(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
+import { toast } from '../lib/toast.js';
 
 export default function LeftSidebar({ topics, onTopicsChange }) {
   const [inputVal, setInputVal] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    try {
+      const data = await getTopics();
+      onTopicsChange(data.topics || []);
+    } catch {}
+  }
 
   async function handleAdd() {
     const val = inputVal.trim();
-    if (!val) return;
-    await createTopic(val);
-    setInputVal('');
-    const data = await getTopics();
-    onTopicsChange(data.topics || []);
+    if (!val || busy) return;
+    setBusy(true);
+    try {
+      await createTopic(val);
+      setInputVal('');
+      await refresh();
+      toast.success(`Added topic “${val}”`, 'Topics');
+    } catch {
+      toast.error('Could not create topic.', 'Topics');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleDelete(id, e) {
     e.stopPropagation();
-    await deleteTopic(id);
-    const data = await getTopics();
-    onTopicsChange(data.topics || []);
+    try {
+      await deleteTopic(id);
+      await refresh();
+    } catch {
+      toast.error('Could not delete topic.', 'Topics');
+    }
   }
 
   async function handleActivate(id) {
-    await activateTopic(id);
-    const data = await getTopics();
-    onTopicsChange(data.topics || []);
+    try {
+      await activateTopic(id);
+      await refresh();
+    } catch {}
   }
 
   async function handleClearActive() {
     const active = topics.find(t => t.active);
     if (active) {
       await activateTopic(active.id);
-      const data = await getTopics();
-      onTopicsChange(data.topics || []);
+      await refresh();
     }
   }
+
+  const activeTopic = topics.find(t => t.active);
 
   return (
     <div id="sidebar-left">
       <div id="topics-section">
         <div className="sb-header">
-          Topics
-          <button onClick={handleClearActive} title="Clear active topic">&#x2715;</button>
+          <span>
+            Topics
+            {topics.length > 0 && (
+              <span style={{ color: 'var(--muted-2)', marginLeft: 6, fontWeight: 500 }}>
+                · {topics.length}
+              </span>
+            )}
+          </span>
+          {activeTopic && (
+            <button
+              onClick={handleClearActive}
+              title={`Clear active topic (${activeTopic.title})`}
+              aria-label="Clear active topic"
+            >
+              ✕
+            </button>
+          )}
         </div>
         <div id="topics-list">
-          {topics.map(t => (
-            <div
-              key={t.id}
-              className={'topic-item' + (t.active ? ' active' : '')}
-              onClick={() => handleActivate(t.id)}
-            >
-              <div className="topic-dot" />
-              <div className="topic-body">
-                <div
-                  className="topic-title"
-                  dangerouslySetInnerHTML={{ __html: esc(t.title) }}
-                />
-                {t.description && (
-                  <div
-                    className="topic-desc"
-                    dangerouslySetInnerHTML={{ __html: esc(t.description) }}
-                  />
-                )}
-              </div>
-              <button
-                className="topic-del"
-                onClick={(e) => handleDelete(t.id, e)}
-                title="Remove"
-              >
-                &times;
-              </button>
+          {topics.length === 0 ? (
+            <div style={{
+              padding: '14px 16px', color: 'var(--muted-2)',
+              fontSize: 11, fontStyle: 'italic', textAlign: 'center',
+            }}>
+              No topics yet — add one below to give Jarvis ongoing context.
             </div>
-          ))}
+          ) : (
+            topics.map(t => (
+              <div
+                key={t.id}
+                className={'topic-item' + (t.active ? ' active' : '')}
+                onClick={() => handleActivate(t.id)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleActivate(t.id);
+                  }
+                }}
+              >
+                <div className="topic-dot" />
+                <div className="topic-body">
+                  <div className="topic-title">{t.title}</div>
+                  {t.description && (
+                    <div className="topic-desc">{t.description}</div>
+                  )}
+                </div>
+                <button
+                  className="topic-del"
+                  onClick={(e) => handleDelete(t.id, e)}
+                  title="Remove topic"
+                  aria-label={`Remove topic ${t.title}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))
+          )}
         </div>
         <div id="topic-add">
           <input
@@ -86,8 +127,11 @@ export default function LeftSidebar({ topics, onTopicsChange }) {
             value={inputVal}
             onChange={e => setInputVal(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+            aria-label="New topic"
           />
-          <button onClick={handleAdd}>+</button>
+          <button onClick={handleAdd} disabled={busy || !inputVal.trim()} title="Add topic">
+            +
+          </button>
         </div>
       </div>
 

@@ -1,40 +1,51 @@
-import React, { useState, useEffect } from 'react';
-import { getSpotifyCurrent } from '../api.js';
+import React from 'react';
 
-export default function TopBar({ apiOnline, alwaysOn, onToggleAlwaysOn, onNewChat, onOpenSettings, onOpenRaceHub }) {
-  const [nowPlaying, setNowPlaying] = useState(null);
+function initialOf(name) {
+  if (!name) return '♫';
+  const ch = String(name).trim()[0];
+  return (ch || '♫').toUpperCase();
+}
 
-  useEffect(() => {
-    function fetchNowPlaying() {
-      getSpotifyCurrent()
-        .then(d => setNowPlaying(d.running ? d : null))
-        .catch(() => setNowPlaying(null));
-    }
-    fetchNowPlaying();
-    const t = setInterval(fetchNowPlaying, 5000);
-    return () => clearInterval(t);
-  }, []);
+export default function TopBar({
+  apiOnline,
+  alwaysOn,
+  spotify,
+  onToggleAlwaysOn,
+  onNewChat,
+  onOpenSettings,
+  onOpenRaceHub,
+  onOpenHelp,
+}) {
+  const isPlaying = spotify?.status === 'Playing';
+  const hasSong = spotify?.running && spotify?.title;
 
-  const isPlaying = nowPlaying?.status === 'Playing';
-  const hasSong   = nowPlaying?.title;
+  const apiTitle = apiOnline === true
+    ? 'LM Studio: online'
+    : apiOnline === false
+    ? 'LM Studio: offline — check Settings → LM Studio'
+    : 'LM Studio: status unknown';
 
   return (
-    <div id="topbar">
-      <span className="logo">J A R V I S</span>
+    <div id="topbar" role="banner">
+      <span className="logo" aria-label="Jarvis">JARVIS</span>
+
       <div
         id="api-dot"
         className={apiOnline === true ? 'online' : apiOnline === false ? 'offline' : ''}
-        title="LM Studio connection"
+        title={apiTitle}
+        role="status"
+        aria-label={apiTitle}
       />
 
       {hasSong && (
-        <div className={'now-playing' + (isPlaying ? ' playing' : '')}>
-          <span className="np-icon">{isPlaying ? '♫' : '⏸'}</span>
+        <div
+          className={'now-playing' + (isPlaying ? ' playing' : '')}
+          title={`${spotify.title}${spotify.artist ? ' — ' + spotify.artist : ''}`}
+        >
+          <span className="np-art" aria-hidden>{isPlaying ? '♫' : '⏸'}</span>
           <span className="np-text">
-            <span className="np-title">{nowPlaying.title}</span>
-            {nowPlaying.artist && (
-              <span className="np-artist"> · {nowPlaying.artist}</span>
-            )}
+            <span className="np-title">{spotify.title}</span>
+            {spotify.artist && <span className="np-artist"> · {spotify.artist}</span>}
           </span>
         </div>
       )}
@@ -42,12 +53,27 @@ export default function TopBar({ apiOnline, alwaysOn, onToggleAlwaysOn, onNewCha
       <button
         className={'tbtn' + (alwaysOn ? ' active' : '')}
         onClick={onToggleAlwaysOn}
+        aria-pressed={alwaysOn}
+        title="Continuous listening (Ctrl+/)"
       >
-        &#x27F3; Always On
+        <span className="tbtn-icon" aria-hidden>⟳</span>
+        Always On
       </button>
-      <button className="tbtn" onClick={onNewChat}>New Chat</button>
-      <button className="tbtn" onClick={onOpenRaceHub} title="Racing & media ops hub">&#9201; Racing</button>
-      <button className="tbtn" onClick={onOpenSettings}>&#9881; Settings</button>
+      <button className="tbtn" onClick={onNewChat} title="Start a fresh conversation (Ctrl+L)">
+        <span className="tbtn-icon" aria-hidden>＋</span>
+        New Chat
+      </button>
+      <button className="tbtn" onClick={onOpenRaceHub} title="Racing & media ops hub (G then R)">
+        <span className="tbtn-icon" aria-hidden>⏱</span>
+        Racing
+      </button>
+      <button className="tbtn" onClick={onOpenSettings} title="Settings (G then S)">
+        <span className="tbtn-icon" aria-hidden>⚙</span>
+        Settings
+      </button>
+      <button className="tbtn" onClick={onOpenHelp} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+        <span className="tbtn-icon" aria-hidden>?</span>
+      </button>
     </div>
   );
 }

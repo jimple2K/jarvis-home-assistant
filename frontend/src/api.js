@@ -220,3 +220,48 @@ export async function deleteRaceHubItem(id) {
   const res = await fetch(`/api/race-hub/items/${id}`, { method: 'DELETE' });
   return res.json();
 }
+
+// ── GitHub ───────────────────────────────────────────────────────────────────
+
+export async function getGithubStatus() {
+  const res = await fetch('/api/github/status');
+  return res.json();
+}
+
+export async function saveGithubToken(token) {
+  const res = await fetch('/api/github/setup', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ token }),
+  });
+  return res.json();
+}
+
+export async function configureGitHttps() {
+  const res = await fetch('/api/github/configure-https', { method: 'POST' });
+  return res.json();
+}
+
+export async function setupGithubSsh(title) {
+  const res = await fetch('/api/github/setup-ssh', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ title: title || '' }),
+  });
+  return res.json();
+}
+
+export async function testGithubSsh() {
+  const res = await fetch('/api/github/test-ssh', { method: 'POST' });
+  return res.json();
+}
+
+export async function getGithubRepos(limit = 20) {
+  const res = await fetch(`/api/github/repos?limit=${limit}`);
+  return res.json();
+}
+
+export async function clearGithubAuth() {
+  const res = await fetch('/api/github/clear', { method: 'POST' });
+  return res.json();
+}

@@ -16,10 +16,12 @@ import db
 import ssh_metrics as ssh
 import spotify as _spotify
 import race_hub
+import github_tools as _gh
 
 load_dotenv()
 db.init()
 ssh.start_all_monitors()
+# Voice prefetch is wired up after _ensure_default_voice_async is defined, below.
 
 app = Flask(__name__)
 conversation_history = []
@@ -63,21 +65,32 @@ def _activity_snapshot() -> dict:
 
 
 def get_config():
+    # Mask the GitHub token so it never leaves the box. The frontend only needs
+    # to know it's set, plus the cached username.
+    gh_token = (os.getenv("GITHUB_TOKEN") or "").strip()
     return {
         "url":         os.getenv("LM_STUDIO_URL",    "http://100.x.x.x:1234"),
         "model":       os.getenv("LM_STUDIO_MODEL",   "local-model"),
         "api_key":     os.getenv("LM_STUDIO_API_KEY", ""),
-        "piper_voice": os.getenv("PIPER_VOICE",       "en_US-amy-medium"),
+        "piper_voice": os.getenv("PIPER_VOICE",       "en_GB-alan-medium"),
         "tts_sink":    os.getenv("TTS_SINK",           ""),
         "tts_style":   os.getenv("TTS_STYLE",          "natural"),
         "tts_speed":   float(os.getenv("TTS_SPEED",    "1.0")),
         "tts_volume":  float(os.getenv("TTS_VOLUME",   "1.0")),
+        "github_token_set": bool(gh_token),
+        "github_token_tail": gh_token[-4:] if len(gh_token) >= 4 else "",
+        "github_username":   os.getenv("GITHUB_USERNAME", ""),
     }
 
 
 def build_system_prompt():
-    base = """You are Jarvis, a voice-operated home assistant on this Linux machine.
+    base = """You are Jarvis, a voice-operated home assistant on this Linux machine, modeled on the Stark-style AI: composed, dryly polite, never theatrical.
 You have full tool access: shell, filesystem, processes, browser, web search, memory, topics, concepts, and Spotify control.
+
+Persona — applies to every spoken line:
+- Calm, formal-but-warm British register. Address the user as "sir" sparingly (max once per reply, never every turn).
+- Concise. Confident. Never apologise unless you actually failed. No hype, no exclamation marks.
+- Dry wit is welcome in passing, never at the cost of clarity.
 
 Rules — your replies are spoken aloud via TTS:
 - Keep the spoken part brief (1-3 short sentences). Outside of code fences, avoid markdown bullets/headers/asterisks.
@@ -90,7 +103,14 @@ Rules — your replies are spoken aloud via TTS:
 - Use set_active_topic() when the user shifts focus to a different subject.
 - If an active topic exists, stay on that topic unless the user redirects you.
 - If the user's message begins with "[Typed in the UI", they pasted or typed exact text (IPs, passwords, keys) — never paraphrase those values; confirm before speaking them via TTS.
-- Summarize what you did; don't explain how."""
+- Summarize what you did; don't explain how.
+
+GitHub & coding rules:
+- One token configured in Settings → GitHub powers everything (REST API + HTTPS git).
+- Default to HTTPS git. If a clone/push fails with auth errors, FIRST call github_status() to verify the token, then github_configure_git_https() to wire credentials. Only fall back to SSH (github_setup_ssh_key + github_test_ssh) if the user explicitly asks for SSH.
+- For any GitHub query (list repos, open issues, recent activity, PR status, search), call the github_* tool directly — never use the bash tool to invoke `gh` or scrape github.com.
+- For local repo work, prefer git_status / git_pull / git_commit_push / git_log / git_create_branch / git_checkout over raw bash. They handle the cwd and timeout cleanly.
+- When writing or editing code, place all code in a single fenced block per language; explain the change in one sentence (TTS-friendly)."""
 
     mem = db.search_memories("", limit=5)
     if mem:
@@ -236,6 +256,30 @@ def _voices_dir():
     return d
 
 
+def _installed_voices() -> list[str]:
+    vdir = _voices_dir()
+    try:
+        return sorted(
+            os.path.splitext(os.path.splitext(f)[0])[0]
+            for f in os.listdir(vdir)
+            if f.endswith(".onnx")
+        )
+    except FileNotFoundError:
+        return []
+
+
+def _resolve_voice(requested: str) -> tuple[str, bool]:
+    """Return (voice_name, used_fallback). Falls back to the first installed voice
+    if the requested one is not present, so TTS keeps working after a model rename."""
+    vdir = _voices_dir()
+    if requested and os.path.exists(os.path.join(vdir, f"{requested}.onnx")):
+        return requested, False
+    installed = _installed_voices()
+    if installed:
+        return installed[0], True
+    return requested, False
+
+
 def _piper_sr(config_path: str) -> int:
     try:
         with open(config_path) as f:
@@ -378,15 +422,59 @@ def audio_sinks():
         return jsonify({"error": str(e)}), 500
 
 
+def _silence_pcm_ms(ms: int) -> bytes:
+    """Return `ms` of silent s16le stereo PCM @ TARGET_SR. 4 bytes per frame."""
+    if ms <= 0:
+        return b""
+    n_frames = int(TARGET_SR * ms / 1000)
+    return b"\x00" * (n_frames * 4)
+
+
+def _is_bluetooth_sink(name: str) -> bool:
+    n = (name or "").lower()
+    return n.startswith("bluez_") or "bluetooth" in n or n.startswith("bt_")
+
+
+def _wake_pulse_sink(name: str) -> None:
+    """Un-suspend a PulseAudio sink so the first audio frame isn't eaten by
+    codec wake-up (important for Bluetooth A2DP). Safe no-op if pactl fails."""
+    if not name:
+        return
+    try:
+        subprocess.run(
+            ["pactl", "suspend-sink", name, "0"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except Exception:
+        pass
+
+
 def _paplay(pcm: bytes, sink: str = ""):
-    """Play raw s16le 48kHz stereo PCM via paplay. Falls back to system default if sink fails."""
+    """Play raw s16le 48kHz stereo PCM via paplay. Falls back to system default if sink fails.
+
+    For Bluetooth sinks we (a) pre-un-suspend the sink, (b) pad ~350 ms of
+    silence at the start so the A2DP codec has time to ramp up, and (c) tack
+    ~200 ms of silence on the tail so the last word isn't clipped while
+    paplay drains."""
     global _tts_proc
+    if not pcm:
+        return
+
     base = ["paplay", "--raw", "--format=s16le", f"--rate={TARGET_SR}", "--channels=2"]
     sinks_to_try = [sink, ""] if sink else [""]
     for s in sinks_to_try:
-        cmd = base + ([f"--device={s}"] if s else [])
+        bt = _is_bluetooth_sink(s)
+        play_pcm = pcm
+        cmd = list(base)
+        if bt:
+            _wake_pulse_sink(s)
+            play_pcm = _silence_pcm_ms(500) + pcm + _silence_pcm_ms(250)
+            # Larger latency target gives BT room to buffer without underrun.
+            cmd += ["--latency-msec=120"]
+        if s:
+            cmd += [f"--device={s}"]
         _tts_proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-        _tts_proc.communicate(input=pcm)
+        _tts_proc.communicate(input=play_pcm)
         if _tts_proc.returncode == 0:
             return
     # Both failed — not a hard error, audio just didn't play
@@ -408,15 +496,22 @@ def tts():
         return ("", 204)
     text = re.sub(r"[*_`#>]", "", text)
 
-    cfg   = get_config()
-    voice = cfg["piper_voice"]
-    vdir  = _voices_dir()
+    cfg            = get_config()
+    requested      = cfg["piper_voice"]
+    voice, fellback = _resolve_voice(requested)
+    vdir           = _voices_dir()
     model  = os.path.join(vdir, f"{voice}.onnx")
     config = os.path.join(vdir, f"{voice}.onnx.json")
 
     if not os.path.exists(model):
-        _activity_push("error", f"tts: voice {voice} not downloaded")
-        return jsonify({"error": "voice_not_downloaded", "voice": voice}), 503
+        _activity_push("error", f"tts: no Piper voices installed — open Settings → Download Voice")
+        return jsonify({"error": "voice_not_downloaded", "voice": requested}), 503
+
+    if fellback:
+        _activity_push(
+            "warn",
+            f"tts: '{requested}' not installed — using '{voice}' instead. Download in Settings.",
+        )
 
     snippet = (text[:60] + "…") if len(text) > 60 else text
     _activity_set_current("speaking", snippet)
@@ -454,22 +549,63 @@ def tts():
             return jsonify({"error": str(e)}), 500
 
 
-@app.route("/tts/download", methods=["POST"])
-def download_voice():
-    voice = request.json.get("voice", "en_US-amy-medium")
-    vdir  = _voices_dir()
+def _voice_url_path(voice: str) -> str | None:
+    """Map e.g. 'en_GB-alan-medium' to the HuggingFace Piper-voices subpath."""
     parts = voice.split("-")
     if len(parts) < 3:
-        return jsonify({"error": "Invalid voice format"}), 400
+        return None
     locale, name, quality = parts[0], parts[1], parts[2]
-    lang  = locale.split("_")[0]
-    base  = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
-    path  = f"{lang}/{locale}/{name}/{quality}/{voice}"
+    lang = locale.split("_")[0]
+    return f"{lang}/{locale}/{name}/{quality}/{voice}"
+
+
+def _download_voice_blocking(voice: str) -> tuple[bool, str]:
+    """Download a Piper voice synchronously. Returns (ok, message)."""
+    sub = _voice_url_path(voice)
+    if not sub:
+        return False, f"invalid voice name '{voice}'"
+    vdir = _voices_dir()
+    if os.path.exists(os.path.join(vdir, f"{voice}.onnx")):
+        return True, f"{voice} already installed"
+    base = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+    import urllib.request
+    for ext in (".onnx", ".onnx.json"):
+        url  = f"{base}/{sub}{ext}"
+        dest = os.path.join(vdir, f"{voice}{ext}")
+        try:
+            urllib.request.urlretrieve(url, dest)
+        except Exception as e:
+            return False, f"{voice}{ext}: {e}"
+    return True, f"{voice} downloaded"
+
+
+def _ensure_default_voice_async() -> None:
+    """Background-download the configured Piper voice if it's missing."""
+    voice = get_config()["piper_voice"]
+    if os.path.exists(os.path.join(_voices_dir(), f"{voice}.onnx")):
+        return
+
+    def _worker():
+        _activity_push("voice", f"downloading recommended voice {voice}…")
+        ok, msg = _download_voice_blocking(voice)
+        _activity_push("voice" if ok else "error", f"voice: {msg}")
+
+    threading.Thread(target=_worker, daemon=True, name="voice-prefetch").start()
+
+
+@app.route("/tts/download", methods=["POST"])
+def download_voice():
+    voice = request.json.get("voice", "en_GB-alan-medium")
+    sub   = _voice_url_path(voice)
+    if not sub:
+        return jsonify({"error": "Invalid voice format"}), 400
+    base = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+    vdir = _voices_dir()
 
     def stream():
         import urllib.request
         for ext in [".onnx", ".onnx.json"]:
-            url  = f"{base}/{path}{ext}"
+            url  = f"{base}/{sub}{ext}"
             dest = os.path.join(vdir, f"{voice}{ext}")
             yield f"data: Downloading {voice}{ext}...\n\n"
             try:
@@ -821,6 +957,90 @@ def api_activity():
     return jsonify(_activity_snapshot())
 
 
+# ── GitHub ─────────────────────────────────────────────────────────────────────
+
+@app.route("/api/github/status")
+def api_github_status():
+    return jsonify(_gh.gh_status())
+
+
+@app.route("/api/github/setup", methods=["POST"])
+def api_github_setup():
+    """Save the token (if provided), then validate it. Persists GITHUB_USERNAME
+    when valid so subsequent calls have a cached login."""
+    data = request.json or {}
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if not os.path.exists(env_path):
+        open(env_path, "w").close()
+    token = (data.get("token") or "").strip()
+    if token:
+        set_key(env_path, "GITHUB_TOKEN", token)
+        os.environ["GITHUB_TOKEN"] = token
+    status = _gh.gh_status()
+    if status.get("ok") and status.get("login"):
+        set_key(env_path, "GITHUB_USERNAME", status["login"])
+        os.environ["GITHUB_USERNAME"] = status["login"]
+    return jsonify(status)
+
+
+@app.route("/api/github/configure-https", methods=["POST"])
+def api_github_configure_https():
+    return jsonify(_gh.gh_configure_git_https())
+
+
+@app.route("/api/github/setup-ssh", methods=["POST"])
+def api_github_setup_ssh():
+    data = request.json or {}
+    return jsonify(_gh.gh_setup_ssh_key(data.get("title")))
+
+
+@app.route("/api/github/test-ssh", methods=["POST"])
+def api_github_test_ssh():
+    return jsonify(_gh.gh_ssh_test())
+
+
+@app.route("/api/github/repos")
+def api_github_repos():
+    limit = int(request.args.get("limit", 20))
+    affiliation = request.args.get("affiliation", "owner,collaborator")
+    # Re-use the formatter to keep one source of truth.
+    if not (os.getenv("GITHUB_TOKEN") or "").strip():
+        return jsonify({"ok": False, "error": "Not configured", "repos": []})
+    try:
+        r = _gh._api(
+            "GET", "/user/repos",
+            params={"per_page": min(100, max(1, limit)), "sort": "updated", "affiliation": affiliation},
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "repos": []})
+    if r.status_code != 200:
+        return jsonify({"ok": False, "error": f"HTTP {r.status_code}", "repos": []})
+    items = r.json() or []
+    repos = [{
+        "full_name":    i.get("full_name"),
+        "description":  i.get("description") or "",
+        "private":      bool(i.get("private")),
+        "language":     i.get("language") or "",
+        "stars":        i.get("stargazers_count", 0),
+        "updated_at":   i.get("updated_at"),
+        "html_url":     i.get("html_url"),
+        "default_branch": i.get("default_branch"),
+    } for i in items[:limit]]
+    return jsonify({"ok": True, "repos": repos})
+
+
+@app.route("/api/github/clear", methods=["POST"])
+def api_github_clear():
+    """Wipe the cached token. Useful when rotating PATs."""
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(env_path):
+        set_key(env_path, "GITHUB_TOKEN", "")
+        set_key(env_path, "GITHUB_USERNAME", "")
+    os.environ["GITHUB_TOKEN"] = ""
+    os.environ["GITHUB_USERNAME"] = ""
+    return jsonify({"ok": True})
+
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
@@ -851,14 +1071,16 @@ def save_config():
     if not os.path.exists(env_path):
         open(env_path, "w").close()
     for k, v in {
-        "url":         "LM_STUDIO_URL",
-        "model":       "LM_STUDIO_MODEL",
-        "api_key":     "LM_STUDIO_API_KEY",
-        "piper_voice": "PIPER_VOICE",
-        "tts_sink":    "TTS_SINK",
-        "tts_style":   "TTS_STYLE",
-        "tts_speed":   "TTS_SPEED",
-        "tts_volume":  "TTS_VOLUME",
+        "url":             "LM_STUDIO_URL",
+        "model":           "LM_STUDIO_MODEL",
+        "api_key":         "LM_STUDIO_API_KEY",
+        "piper_voice":     "PIPER_VOICE",
+        "tts_sink":        "TTS_SINK",
+        "tts_style":       "TTS_STYLE",
+        "tts_speed":       "TTS_SPEED",
+        "tts_volume":      "TTS_VOLUME",
+        "github_token":    "GITHUB_TOKEN",
+        "github_username": "GITHUB_USERNAME",
     }.items():
         if k in data:
             set_key(env_path, v, data[k])
@@ -878,10 +1100,16 @@ def ping():
 
 
 if __name__ == "__main__":
-    host = os.getenv("JARVIS_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    # Pre-fetch the recommended Jarvis voice in the background on first run.
+    try:
+        _ensure_default_voice_async()
+    except Exception:
+        pass
+
+    host = os.getenv("JARVIS_HOST", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.getenv("JARVIS_PORT", "5757"))
     print(f"Jarvis at http://{host}:{port}/")
     print(f"  Mobile dispatch UI: http://{host}:{port}/mobile")
-    if host == "127.0.0.1":
-        print("  (Set JARVIS_HOST=0.0.0.0 to allow Tailscale / LAN access.)")
+    if host == "0.0.0.0":
+        print("  (Listening on all interfaces — reachable from your Tailnet / LAN.)")
     app.run(host=host, port=port, debug=False, threaded=True)

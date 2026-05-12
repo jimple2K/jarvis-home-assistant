@@ -10,7 +10,7 @@ LOG="$DIR/.jarvis-server.log"
 PID_FILE="$DIR/.jarvis.pid"
 PY="$DIR/.venv/bin/python"
 PORT="${JARVIS_PORT:-5757}"
-HOST="${JARVIS_HOST:-127.0.0.1}"
+HOST="${JARVIS_HOST:-0.0.0.0}"
 if [[ -f "$DIR/.env" ]]; then
   _line=$(grep -E '^[[:space:]]*JARVIS_PORT=' "$DIR/.env" | tail -n1 || true)
   if [[ -n "${_line:-}" ]]; then
@@ -69,6 +69,10 @@ fi
 
 # ── Start Flask (background, survives launcher exit) ─────────────────────────
 echo "Starting Jarvis → http://${HOST}:${PORT}/ (log: $LOG)"
+echo "  Mobile dispatch (same port): http://${HOST}:${PORT}/mobile"
+if [[ "$HOST" == "0.0.0.0" ]]; then
+  echo "  (Reachable on the Tailnet / LAN — Tailscale phone URL: http://<this-host>:${PORT}/mobile)"
+fi
 nohup env JARVIS_HOST="$HOST" JARVIS_PORT="$PORT" "$PY" "$DIR/app.py" >>"$LOG" 2>&1 &
 NEW_PID=$!
 echo "$NEW_PID" >"$PID_FILE"

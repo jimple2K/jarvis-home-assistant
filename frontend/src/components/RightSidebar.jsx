@@ -4,14 +4,12 @@ import SpotifyPanel from './SpotifyPanel.jsx';
 const LS_KEY = 'jarvis.rightSidebar.layout';
 const GUTTER = 6;
 const MIN_TS = 92;
-const MIN_SP = 100;
+const MIN_SP = 110;
 const MIN_CO = 64;
-const MIN_RW = 168;
-const MAX_RW = 520;
+const MIN_RW = 196;
+const MAX_RW = 560;
 
-function clamp(v, a, b) {
-  return Math.max(a, Math.min(b, v));
-}
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
 function clampVertical(tsH, spH, totalH) {
   const maxTs = totalH - GUTTER - MIN_SP - GUTTER - MIN_CO;
@@ -37,26 +35,15 @@ function readSaved() {
   }
 }
 
-function esc(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
 function TsMachine({ m }) {
   const mx = m.metrics;
   const sshClass = !m.ssh_configured
     ? 'ssh-none'
-    : mx?.live
-    ? 'ssh-live'
-    : 'ssh-dead';
+    : mx?.live ? 'ssh-live' : 'ssh-dead';
 
   const sshTip = !m.ssh_configured
     ? 'SSH: not configured'
-    : mx?.live
-    ? 'SSH: live connection'
-    : 'SSH: reconnecting…';
+    : mx?.live ? 'SSH: live connection' : 'SSH: reconnecting…';
 
   let metricsEl = null;
   if (mx) {
@@ -84,11 +71,11 @@ function TsMachine({ m }) {
       </div>
       <div className="ts-info">
         <div className="ts-name">
-          {esc(m.hostname)}
+          {m.hostname}
           {m.self && <span className="ts-self-badge">this</span>}
         </div>
         <div className="ts-sub">
-          {esc(m.ip)}{m.os ? ' · ' + esc(m.os) : ''}
+          {m.ip}{m.os ? ' · ' + m.os : ''}
         </div>
         {metricsEl}
       </div>
@@ -100,20 +87,17 @@ export default function RightSidebar({ tailscale, concepts, spotify, onSpotifyUp
   const machines = tailscale?.machines || [];
   const conceptList = concepts?.concepts || [];
   const rootRef = useRef(null);
-  const sizesRef = useRef({ tsH: 220, spH: 150, rightW: 220 });
+  const sizesRef = useRef({ tsH: 240, spH: 168, rightW: 240 });
 
   const [sizes, setSizes] = useState(() => {
     const saved = readSaved();
     return saved
       ? { ...saved, rightW: clamp(saved.rightW, MIN_RW, MAX_RW) }
-      : { tsH: 220, spH: 150, rightW: 220 };
+      : { tsH: 240, spH: 168, rightW: 240 };
   });
   const [active, setActive] = useState(null);
 
-  useLayoutEffect(() => {
-    sizesRef.current = sizes;
-  }, [sizes]);
-
+  useLayoutEffect(() => { sizesRef.current = sizes; }, [sizes]);
   useLayoutEffect(() => {
     document.documentElement.style.setProperty('--right-sidebar-w', `${sizes.rightW}px`);
   }, [sizes.rightW]);
@@ -150,9 +134,7 @@ export default function RightSidebar({ tailscale, concepts, spotify, onSpotifyUp
       setSizes((s) => ({ ...s, rightW: nw }));
     };
     const end = (ev) => {
-      try {
-        node.releasePointerCapture(ev.pointerId);
-      } catch {}
+      try { node.releasePointerCapture(ev.pointerId); } catch {}
       node.removeEventListener('pointermove', move);
       node.removeEventListener('pointerup', end);
       node.removeEventListener('pointercancel', end);
@@ -178,9 +160,7 @@ export default function RightSidebar({ tailscale, concepts, spotify, onSpotifyUp
       setSizes((s) => ({ ...s, ...clampVertical(nextTs, s.spH, H) }));
     };
     const end = (ev) => {
-      try {
-        node.releasePointerCapture(ev.pointerId);
-      } catch {}
+      try { node.releasePointerCapture(ev.pointerId); } catch {}
       node.removeEventListener('pointermove', move);
       node.removeEventListener('pointerup', end);
       node.removeEventListener('pointercancel', end);
@@ -206,9 +186,7 @@ export default function RightSidebar({ tailscale, concepts, spotify, onSpotifyUp
       setSizes((s) => ({ ...s, ...clampVertical(s.tsH, nextSp, H) }));
     };
     const end = (ev) => {
-      try {
-        node.releasePointerCapture(ev.pointerId);
-      } catch {}
+      try { node.releasePointerCapture(ev.pointerId); } catch {}
       node.removeEventListener('pointermove', move);
       node.removeEventListener('pointerup', end);
       node.removeEventListener('pointercancel', end);
@@ -218,6 +196,8 @@ export default function RightSidebar({ tailscale, concepts, spotify, onSpotifyUp
     node.addEventListener('pointerup', end);
     node.addEventListener('pointercancel', end);
   }, []);
+
+  const onlineCount = machines.filter(m => m.online).length;
 
   return (
     <div id="sidebar-right" ref={rootRef}>
@@ -230,14 +210,26 @@ export default function RightSidebar({ tailscale, concepts, spotify, onSpotifyUp
         aria-label="Resize right sidebar width"
       />
       <div id="ts-panel" style={{ height: sizes.tsH, flexShrink: 0 }}>
-        <div className="sb-header">Tailscale Network</div>
+        <div className="sb-header">
+          <span>
+            Tailscale
+            {machines.length > 0 && (
+              <span style={{
+                marginLeft: 6, color: 'var(--muted-2)',
+                fontWeight: 500, fontSize: 9.5, letterSpacing: 0,
+              }}>
+                · {onlineCount}/{machines.length} online
+              </span>
+            )}
+          </span>
+        </div>
         <div id="ts-list">
           {tailscale?.error ? (
-            <div className="ts-machine" style={{ color: 'var(--red)', fontSize: '10px' }}>
-              {esc(tailscale.error)}
+            <div className="ts-machine" style={{ color: 'var(--red)', fontSize: 10 }}>
+              {tailscale.error}
             </div>
           ) : machines.length === 0 ? (
-            <div className="ts-machine" style={{ color: 'var(--muted)', fontSize: '10px' }}>
+            <div className="ts-machine" style={{ color: 'var(--muted)', fontSize: 10, fontStyle: 'italic' }}>
               Tailscale unavailable
             </div>
           ) : (
@@ -270,17 +262,34 @@ export default function RightSidebar({ tailscale, concepts, spotify, onSpotifyUp
         />
 
         <div id="concepts-panel">
-          <div className="sb-header">Concepts</div>
+          <div className="sb-header">
+            <span>
+              Concepts
+              {conceptList.length > 0 && (
+                <span style={{
+                  marginLeft: 6, color: 'var(--muted-2)',
+                  fontWeight: 500, fontSize: 9.5, letterSpacing: 0,
+                }}>
+                  · {conceptList.length}
+                </span>
+              )}
+            </span>
+          </div>
           <div id="concepts-list">
             {conceptList.length === 0 ? (
-              <div style={{ padding: '10px 12px', fontSize: '10px', color: 'var(--border)' }}>
+              <div style={{
+                padding: '14px 12px', fontSize: 10.5,
+                color: 'var(--muted-2)', fontStyle: 'italic', textAlign: 'center',
+              }}>
                 No concepts yet
               </div>
             ) : (
               conceptList.map((c, i) => (
                 <div key={i} className="concept-item">
-                  <span className={'concept-badge ' + esc(c.category)}>{esc(c.category)}</span>
-                  <span className="concept-text">{esc(c.text)}</span>
+                  <span className={'concept-badge ' + (c.category || 'info')}>
+                    {c.category || 'info'}
+                  </span>
+                  <span className="concept-text">{c.text}</span>
                 </div>
               ))
             )}

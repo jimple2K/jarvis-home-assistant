@@ -14,6 +14,7 @@ import db
 import ssh_metrics as _ssh
 import spotify as _spotify
 import race_hub as _race_hub
+import github_tools as _gh
 
 
 def _run(cmd, timeout=30, cwd=None):
@@ -572,6 +573,122 @@ def race_hub_remove(item_id: int) -> str:
     return f"Removed racing hub item {item_id}." if ok else f"No racing hub item with ID {item_id}."
 
 
+# ── GitHub & git ──────────────────────────────────────────────────────────────
+
+def github_status() -> str:
+    s = _gh.gh_status()
+    if not s.get("configured"):
+        return s.get("message", "Not configured.")
+    if not s.get("ok"):
+        return f"GitHub: {s.get('error', 'unknown error')}"
+    rl = s.get("rate_limit", {}) or {}
+    scopes = ", ".join(s.get("scopes") or []) or "(none reported)"
+    return (
+        f"GitHub: signed in as {s.get('login') or '?'}"
+        + (f" ({s['name']})" if s.get('name') else "")
+        + f"; scopes: {scopes}"
+        + f"; repos: {s.get('public_repos', 0)} public / {s.get('private_repos', 0)} private"
+        + (f"; API quota: {rl.get('remaining')}/{rl.get('limit')}" if rl.get('remaining') is not None else "")
+    )
+
+
+def github_setup_ssh_key(title: str = "") -> str:
+    r = _gh.gh_setup_ssh_key(title or None)
+    if not r.get("ok"):
+        return f"GitHub SSH setup failed: {r.get('error', 'unknown error')}"
+    return r.get("message", "SSH key configured.")
+
+
+def github_test_ssh() -> str:
+    r = _gh.gh_ssh_test()
+    return r.get("output") or ("ok" if r.get("ok") else "ssh failed")
+
+
+def github_configure_git_https() -> str:
+    r = _gh.gh_configure_git_https()
+    return r.get("message", r.get("error", "unknown error"))
+
+
+def github_list_repos(limit: int = 20, affiliation: str = "owner,collaborator") -> str:
+    return _gh.gh_list_repos(limit=limit, affiliation=affiliation)
+
+
+def github_get_repo(repo: str) -> str:
+    return _gh.gh_get_repo(repo)
+
+
+def github_create_repo(name: str, private: bool = True, description: str = "",
+                       auto_init: bool = True) -> str:
+    return _gh.gh_create_repo(name=name, private=private,
+                              description=description, auto_init=auto_init)
+
+
+def github_clone(repo: str, dest: str = "", use_ssh: bool = False) -> str:
+    return _gh.gh_clone(repo=repo, dest=dest, use_ssh=use_ssh)
+
+
+def github_list_issues(repo: str, state: str = "open", limit: int = 10) -> str:
+    return _gh.gh_list_issues(repo=repo, state=state, limit=limit)
+
+
+def github_create_issue(repo: str, title: str, body: str = "") -> str:
+    return _gh.gh_create_issue(repo=repo, title=title, body=body)
+
+
+def github_list_prs(repo: str, state: str = "open", limit: int = 10) -> str:
+    return _gh.gh_list_prs(repo=repo, state=state, limit=limit)
+
+
+def github_create_gist(filename: str, content: str, description: str = "",
+                       public: bool = False) -> str:
+    return _gh.gh_create_gist(filename=filename, content=content,
+                              description=description, public=public)
+
+
+def github_search_repos(query: str, sort: str = "stars", limit: int = 10) -> str:
+    return _gh.gh_search_repos(query=query, sort=sort, limit=limit)
+
+
+def github_search_code(query: str, limit: int = 10) -> str:
+    return _gh.gh_search_code(query=query, limit=limit)
+
+
+def github_notifications(limit: int = 10) -> str:
+    return _gh.gh_notifications(limit=limit)
+
+
+def github_recent_activity(limit: int = 10) -> str:
+    return _gh.gh_recent_activity(limit=limit)
+
+
+def git_status(path: str = ".") -> str:
+    return _gh.git_status(path=path)
+
+
+def git_pull(path: str = ".") -> str:
+    return _gh.git_pull(path=path)
+
+
+def git_commit_push(path: str, message: str, branch: str = "") -> str:
+    return _gh.git_commit_push(path=path, message=message, branch=branch)
+
+
+def git_log(path: str = ".", limit: int = 10) -> str:
+    return _gh.git_log(path=path, limit=limit)
+
+
+def git_branch_list(path: str = ".") -> str:
+    return _gh.git_branch_list(path=path)
+
+
+def git_create_branch(path: str, branch: str) -> str:
+    return _gh.git_create_branch(path=path, branch=branch)
+
+
+def git_checkout(path: str, ref: str) -> str:
+    return _gh.git_checkout(path=path, ref=ref)
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_FUNCTIONS = {
@@ -631,6 +748,29 @@ TOOL_FUNCTIONS = {
     "race_hub_add":        race_hub_add,
     "race_hub_update":     race_hub_update,
     "race_hub_remove":     race_hub_remove,
+    "github_status":          github_status,
+    "github_setup_ssh_key":   github_setup_ssh_key,
+    "github_test_ssh":        github_test_ssh,
+    "github_configure_git_https": github_configure_git_https,
+    "github_list_repos":      github_list_repos,
+    "github_get_repo":        github_get_repo,
+    "github_create_repo":     github_create_repo,
+    "github_clone":           github_clone,
+    "github_list_issues":     github_list_issues,
+    "github_create_issue":    github_create_issue,
+    "github_list_prs":        github_list_prs,
+    "github_create_gist":     github_create_gist,
+    "github_search_repos":    github_search_repos,
+    "github_search_code":     github_search_code,
+    "github_notifications":   github_notifications,
+    "github_recent_activity": github_recent_activity,
+    "git_status":             git_status,
+    "git_pull":               git_pull,
+    "git_commit_push":        git_commit_push,
+    "git_log":                git_log,
+    "git_branch_list":        git_branch_list,
+    "git_create_branch":      git_create_branch,
+    "git_checkout":           git_checkout,
 }
 
 TOOL_SCHEMAS = [
@@ -1349,6 +1489,339 @@ TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {"item_id": {"type": "integer"}},
                 "required": ["item_id"]
+            }
+        }
+    },
+
+    # ── GitHub & git ────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "github_status",
+            "description": (
+                "Check whether the user's GitHub Personal Access Token is configured "
+                "and valid. Returns the logged-in login, token scopes, repo counts, "
+                "and remaining API quota. Always call this first if any other github_* "
+                "tool returns 'No GitHub token configured'."
+            ),
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_setup_ssh_key",
+            "description": (
+                "One-shot: generate an ED25519 SSH key on this machine (or reuse the "
+                "existing jarvis_github_ed25519), upload its public half to GitHub, and "
+                "wire ~/.ssh/config so `git@github.com` uses it. Idempotent."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Display name for the key on GitHub. Defaults to 'Jarvis (<hostname>)'."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_test_ssh",
+            "description": "Run `ssh -T git@github.com` and report whether SSH auth works.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_configure_git_https",
+            "description": (
+                "Wire the configured token into git's credential store so `git clone/pull/push` "
+                "over HTTPS to github.com works without prompts. Also sets git insteadOf so "
+                "any `git@github.com:` URLs are rewritten to HTTPS. Prefer this over SSH "
+                "unless the user specifically asks for SSH."
+            ),
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_list_repos",
+            "description": "List the authenticated user's most recently-updated GitHub repositories.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit":       {"type": "integer", "description": "Max repos to return (default 20)."},
+                    "affiliation": {"type": "string",  "description": "owner, collaborator, organization_member or comma-separated mix."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_get_repo",
+            "description": "Get details about a GitHub repo (description, default branch, language, clone URLs, etc).",
+            "parameters": {
+                "type": "object",
+                "properties": {"repo": {"type": "string", "description": "'owner/name', 'name' (current user), or a github URL."}},
+                "required": ["repo"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_create_repo",
+            "description": "Create a new GitHub repo under the authenticated user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name":        {"type": "string"},
+                    "private":     {"type": "boolean", "description": "Default true."},
+                    "description": {"type": "string"},
+                    "auto_init":   {"type": "boolean", "description": "Create an initial commit + README. Default true."}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_clone",
+            "description": (
+                "Clone a repo to `dest` (default ~/<repo>). Uses HTTPS-with-token by default "
+                "(the most reliable path). Pass use_ssh=true to use SSH instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo":    {"type": "string"},
+                    "dest":    {"type": "string"},
+                    "use_ssh": {"type": "boolean"}
+                },
+                "required": ["repo"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_list_issues",
+            "description": "List issues in a repo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo":  {"type": "string"},
+                    "state": {"type": "string", "enum": ["open", "closed", "all"]},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["repo"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_create_issue",
+            "description": "Create an issue in a repo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo":  {"type": "string"},
+                    "title": {"type": "string"},
+                    "body":  {"type": "string"}
+                },
+                "required": ["repo", "title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_list_prs",
+            "description": "List pull requests in a repo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo":  {"type": "string"},
+                    "state": {"type": "string", "enum": ["open", "closed", "all"]},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["repo"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_create_gist",
+            "description": "Create a private or public gist from a single file's contents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename":    {"type": "string"},
+                    "content":     {"type": "string"},
+                    "description": {"type": "string"},
+                    "public":      {"type": "boolean"}
+                },
+                "required": ["filename", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_search_repos",
+            "description": "Search public repositories. Use github_search_code for code search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "sort":  {"type": "string", "enum": ["stars", "forks", "updated", "help-wanted-issues"]},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_search_code",
+            "description": (
+                "Search source code on GitHub. By default this searches the user's repos; "
+                "include 'user:<login>' or 'org:<name>' in the query to scope. The query "
+                "syntax supports 'extension:', 'path:', 'filename:', and quoted phrases."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_notifications",
+            "description": "List the user's unread GitHub notifications.",
+            "parameters": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_recent_activity",
+            "description": "List the user's recent public GitHub events (pushes, PRs, issues, etc).",
+            "parameters": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Run `git status --short --branch` in a local working tree.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_pull",
+            "description": "Fast-forward `git pull` in a local working tree.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit_push",
+            "description": (
+                "Stage every change in `path`, commit with `message`, and push to `branch` "
+                "(or the current branch if omitted). Use small, focused messages."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path":    {"type": "string"},
+                    "message": {"type": "string"},
+                    "branch":  {"type": "string"}
+                },
+                "required": ["path", "message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_log",
+            "description": "Show recent git commits (short format) in a local working tree.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path":  {"type": "string"},
+                    "limit": {"type": "integer"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_branch_list",
+            "description": "List branches with their upstream tracking info.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_create_branch",
+            "description": "Create + switch to a new branch.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path":   {"type": "string"},
+                    "branch": {"type": "string"}
+                },
+                "required": ["path", "branch"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_checkout",
+            "description": "Check out a branch, tag, or commit ref.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "ref":  {"type": "string"}
+                },
+                "required": ["path", "ref"]
             }
         }
     },
